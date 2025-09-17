@@ -1,0 +1,8 @@
+{
+    "name": "ctu/honor-app",
+    "description": "CTU Honor Application System - Academic GWA computation and Dean's List application system",
+    "license": "proprietary",
+    "require": {
+        "smalot/pdfparser": "^2.12"
+    }
+}

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__ide__getDiagnostics",
+      "Bash(php:*)",
+      "Bash(find:*)",
+      "Bash(composer validate:*)",
+      "Bash(composer install:*)",
+      "Bash(grep:*)",
+      "Bash(mysql:*)",
+      "Bash(rm:*)",
+      "Bash(mv:*)",
+      "Bash(mkdir:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

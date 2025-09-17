@@ -1,0 +1,26 @@
+# Deny access to all files by default
+Order Deny,Allow
+Deny from all
+
+# Allow access to specific file types
+<FilesMatch "\.(pdf|jpg|jpeg|png|gif)$">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>
+
+# Prevent execution of PHP files
+<FilesMatch "\.php$">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>
+
+# Security headers
+Header always set X-Content-Type-Options nosniff
+Header always set X-Frame-Options DENY
+Header always set X-XSS-Protection "1; mode=block"
+
+# Disable directory browsing
+Options -Indexes
+
+# Set maximum file size (5MB)
+LimitRequestBody 5242880
