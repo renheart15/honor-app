@@ -80,19 +80,40 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 // Get applications for adviser's assigned sections
 // Only show applications if adviser has assigned sections
 if (!empty($adviser_sections)) {
-    // Build the sections condition dynamically
-    $section_placeholders = implode(',', array_fill(0, count($adviser_sections), '?'));
+    // Build flexible section matching conditions
+    $section_conditions = [];
+    $params = [$department];
+
+    foreach ($adviser_sections as $assigned_section) {
+        // Try exact match and partial matches
+        $section_conditions[] = "u.section = ?";
+        $params[] = $assigned_section;
+
+        // If section is like "C-4", also try "C" and "4"
+        if (strpos($assigned_section, '-') !== false) {
+            $parts = explode('-', $assigned_section);
+            foreach ($parts as $part) {
+                $section_conditions[] = "u.section = ?";
+                $params[] = trim($part);
+            }
+        }
+
+        // Also try partial matches using LIKE
+        $section_conditions[] = "u.section LIKE ?";
+        $params[] = '%' . $assigned_section . '%';
+    }
+
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+
     $query = "SELECT ha.*, u.first_name, u.last_name, u.student_id, u.section, u.year_level,
                      ap.semester as period_semester, ap.school_year as period_academic_year
               FROM honor_applications ha
               JOIN users u ON ha.user_id = u.id
               JOIN academic_periods ap ON ha.academic_period_id = ap.id
-              WHERE u.department = ? AND u.section IN ($section_placeholders)
+              WHERE u.department = ? AND $section_where
               ORDER BY ha.submitted_at DESC";
 
     $stmt = $db->prepare($query);
-    $params = [$department];
-    $params = array_merge($params, $adviser_sections);
     $stmt->execute($params);
     $applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -142,11 +163,6 @@ if ($filter !== 'all') {
     $applications = array_filter($applications, function($application) use ($filter) {
         return $application['status'] === $filter;
     });
-}
-
-// Helper function to format GWA
-function formatGWA($gwa) {
-    return number_format(floor($gwa * 100) / 100, 2);
 }
 ?>
 <!DOCTYPE html>

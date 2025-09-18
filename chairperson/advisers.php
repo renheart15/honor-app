@@ -55,61 +55,88 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $message = 'Section is required for assignment.';
             $message_type = 'error';
         } else {
-            // Get current adviser's sections
-            $query = "SELECT section FROM users WHERE id = :adviser_id AND role = 'adviser' AND department = :department";
-            $stmt = $db->prepare($query);
-            $stmt->bindParam(':adviser_id', $adviser_id);
-            $stmt->bindParam(':department', $department);
-            $stmt->execute();
-            $current_adviser = $stmt->fetch(PDO::FETCH_ASSOC);
+            // COMPREHENSIVE VALIDATION SYSTEM
+            $validation_errors = [];
 
-            $current_sections = [];
-            if (!empty($current_adviser['section'])) {
-                $sections_data = json_decode($current_adviser['section'], true);
-                if (!is_array($sections_data)) {
-                    $sections_data = array_map('trim', explode(',', $current_adviser['section']));
+            // Step 1: Check if this exact section-year combination already exists ANYWHERE
+            $global_check_query = "SELECT u.id, u.first_name, u.last_name, u.section
+                                   FROM users u
+                                   WHERE u.role = 'adviser'
+                                   AND u.department = :department
+                                   AND u.section IS NOT NULL
+                                   AND u.section != ''";
+            $global_stmt = $db->prepare($global_check_query);
+            $global_stmt->bindParam(':department', $department);
+            $global_stmt->execute();
+            $all_advisers = $global_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // Check each adviser's sections for conflicts
+            foreach ($all_advisers as $existing_adviser) {
+                $existing_sections = [];
+                if (!empty($existing_adviser['section'])) {
+                    $sections_data = json_decode($existing_adviser['section'], true);
+                    if (is_array($sections_data)) {
+                        $existing_sections = $sections_data;
+                    } else {
+                        $existing_sections = array_map('trim', explode(',', $existing_adviser['section']));
+                    }
                 }
-                $current_sections = $sections_data;
+
+                // Check if the section we want to assign already exists
+                if (in_array($section, $existing_sections)) {
+                    if ($existing_adviser['id'] == $adviser_id) {
+                        $validation_errors[] = "This adviser already has section {$section} assigned.";
+                    } else {
+                        $readable_section = str_replace('-', ' (Year ', $section) . ')';
+                        $validation_errors[] = "Section {$readable_section} is already assigned to {$existing_adviser['first_name']} {$existing_adviser['last_name']}.";
+                    }
+                    break; // Stop at first conflict
+                }
             }
 
-            // Check if section is already assigned to this adviser
-            if (in_array($section, $current_sections)) {
-                $message = "Section {$section} is already assigned to this adviser.";
+            // If there are validation errors, block the assignment
+            if (!empty($validation_errors)) {
+                $message = $validation_errors[0]; // Show first error
                 $message_type = 'error';
+                error_log("VALIDATION BLOCKED: " . $message);
             } else {
-                // Add new section to the list
+                // NO CONFLICTS - Proceed with assignment
+                error_log("VALIDATION PASSED: Assigning section $section to adviser $adviser_id");
+
+                // Get current adviser's sections to add the new one
+                $current_query = "SELECT section FROM users WHERE id = :adviser_id";
+                $current_stmt = $db->prepare($current_query);
+                $current_stmt->bindParam(':adviser_id', $adviser_id);
+                $current_stmt->execute();
+                $current_data = $current_stmt->fetch(PDO::FETCH_ASSOC);
+
+                $current_sections = [];
+                if (!empty($current_data['section'])) {
+                    $sections_data = json_decode($current_data['section'], true);
+                    if (is_array($sections_data)) {
+                        $current_sections = $sections_data;
+                    }
+                }
+
+                // Add new section
                 $current_sections[] = $section;
                 $sections_json = json_encode($current_sections);
 
-                // Update adviser sections
-                $query = "UPDATE users SET section = :sections WHERE id = :adviser_id AND role = 'adviser' AND department = :department";
-                $stmt = $db->prepare($query);
-                $stmt->bindParam(':sections', $sections_json);
-                $stmt->bindParam(':adviser_id', $adviser_id);
-                $stmt->bindParam(':department', $department);
+                // Update database
+                $update_query = "UPDATE users SET section = :sections WHERE id = :adviser_id";
+                $update_stmt = $db->prepare($update_query);
+                $update_stmt->bindParam(':sections', $sections_json);
+                $update_stmt->bindParam(':adviser_id', $adviser_id);
 
-                if ($stmt->execute()) {
-                    $message = "Section {$section} assigned successfully!";
+                if ($update_stmt->execute()) {
+                    $readable_section = str_replace('-', ' (Year ', $section) . ')';
+                    $message = "Section {$readable_section} assigned successfully!";
                     $message_type = 'success';
-
-                    // Add notification to adviser about assignment
-                    $notification_query = "INSERT INTO notifications (user_id, title, message, type, category, created_at)
-                                          VALUES (:user_id, :title, :message, :type, :category, NOW())";
-                    $notification_stmt = $db->prepare($notification_query);
-                    $notification_title = "Section Assignment";
-                    $notification_message = "You have been assigned to section {$section}" . ($year_level ? " (Year {$year_level})" : "") . " by the department chairperson.";
-                    $notification_type = "system";
-                    $notification_category = "system_update";
-
-                    $notification_stmt->bindParam(':user_id', $adviser_id);
-                    $notification_stmt->bindParam(':title', $notification_title);
-                    $notification_stmt->bindParam(':message', $notification_message);
-                    $notification_stmt->bindParam(':type', $notification_type);
-                    $notification_stmt->bindParam(':category', $notification_category);
-                    $notification_stmt->execute();
+                    error_log("ASSIGNMENT SUCCESS: Section $section assigned to adviser $adviser_id");
                 } else {
-                    $message = 'Failed to assign section.';
+                    $message = 'Failed to update database.';
                     $message_type = 'error';
+                    error_log("DATABASE ERROR: Failed to update adviser $adviser_id with section $section");
                 }
             }
         }
@@ -193,18 +220,18 @@ $stmt->execute();
 $advisers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Get assigned sections for each adviser (using a JSON field or comma-separated sections)
-foreach ($advisers as &$adviser) {
+for ($i = 0; $i < count($advisers); $i++) {
     // If sections are stored as JSON or comma-separated in the section field
-    if (!empty($adviser['section'])) {
+    if (!empty($advisers[$i]['section'])) {
         // Try to decode as JSON first
-        $sections = json_decode($adviser['section'], true);
+        $sections = json_decode($advisers[$i]['section'], true);
         if (!is_array($sections)) {
             // If not JSON, treat as comma-separated
-            $sections = array_map('trim', explode(',', $adviser['section']));
+            $sections = array_map('trim', explode(',', $advisers[$i]['section']));
         }
-        $adviser['assigned_sections'] = $sections;
+        $advisers[$i]['assigned_sections'] = $sections;
     } else {
-        $adviser['assigned_sections'] = [];
+        $advisers[$i]['assigned_sections'] = [];
     }
 }
 
@@ -354,6 +381,13 @@ if ($filter !== 'all') {
                                 <span class="<?php echo $message_type === 'success' ? 'text-green-700' : 'text-red-700'; ?> text-sm"><?php echo htmlspecialchars($message); ?></span>
                             </div>
                         </div>
+                        <?php if ($message_type === 'error'): ?>
+                            <script>
+                                document.addEventListener('DOMContentLoaded', function() {
+                                    alert('<?php echo addslashes($message); ?>');
+                                });
+                            </script>
+                        <?php endif; ?>
                     <?php endif; ?>
 
                     <!-- Advisers Table -->
@@ -398,8 +432,15 @@ if ($filter !== 'all') {
                                                     <?php if (!empty($adviser['assigned_sections'])): ?>
                                                         <div class="flex flex-wrap gap-1">
                                                             <?php foreach ($adviser['assigned_sections'] as $section): ?>
+                                                                <?php
+                                                                // Parse section to display readable format
+                                                                $section_parts = explode('-', $section);
+                                                                $section_letter = $section_parts[0];
+                                                                $year_level = isset($section_parts[1]) ? $section_parts[1] : '';
+                                                                $display_section = $section_letter . ($year_level ? " (Year {$year_level})" : "");
+                                                                ?>
                                                                 <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-100 text-green-800 font-medium">
-                                                                    <?php echo htmlspecialchars($section); ?>
+                                                                    <?php echo htmlspecialchars($display_section); ?>
                                                                     <button onclick="removeSection(<?php echo $adviser['id']; ?>, '<?php echo htmlspecialchars($section, ENT_QUOTES); ?>')"
                                                                             class="ml-1 text-green-600 hover:text-green-800" title="Remove section">
                                                                         <i data-lucide="x" class="w-3 h-3"></i>
@@ -537,22 +578,45 @@ if ($filter !== 'all') {
             const adviserId = document.getElementById('assignAdviserId').value;
             const section = document.getElementById('assignSection').value;
             const yearLevel = document.getElementById('assignYear').value;
-            
+            const submitBtn = document.querySelector('#assignSectionModal button[onclick="assignSection()"]');
+            const progressDiv = document.getElementById('assignProgress');
+
             if (!section) {
                 alert('Please select a section');
                 return;
             }
-            
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.innerHTML = `
-                <input type="hidden" name="adviser_id" value="${adviserId}">
-                <input type="hidden" name="action" value="assign_section">
-                <input type="hidden" name="section" value="${section}">
-                <input type="hidden" name="year_level" value="${yearLevel}">
-            `;
-            document.body.appendChild(form);
-            form.submit();
+
+            if (!yearLevel) {
+                alert('Please select a year level');
+                return;
+            }
+
+            // Show progress indicator
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin mr-2"></i>Assigning...';
+            progressDiv.style.display = 'block';
+            progressDiv.innerHTML = '<div class="text-blue-600 text-sm"><i data-lucide="clock" class="w-4 h-4 inline mr-1"></i>Checking for conflicts...</div>';
+
+            // Combine section and year level for storage (e.g., "A-3" for Section A, 3rd Year)
+            const combinedSection = `${section}-${yearLevel}`;
+
+            // Client-side validation check
+            setTimeout(() => {
+                progressDiv.innerHTML = '<div class="text-blue-600 text-sm"><i data-lucide="search" class="w-4 h-4 inline mr-1"></i>Validating assignment...</div>';
+
+                setTimeout(() => {
+                    const form = document.createElement('form');
+                    form.method = 'POST';
+                    form.innerHTML = `
+                        <input type="hidden" name="adviser_id" value="${adviserId}">
+                        <input type="hidden" name="action" value="assign_section">
+                        <input type="hidden" name="section" value="${combinedSection}">
+                        <input type="hidden" name="year_level" value="${yearLevel}">
+                    `;
+                    document.body.appendChild(form);
+                    form.submit();
+                }, 500);
+            }, 300);
         }
     </script>
 
@@ -571,14 +635,23 @@ if ($filter !== 'all') {
                     <label for="assignSection" class="block text-sm font-medium text-gray-700 mb-1">Section</label>
                     <select id="assignSection" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
                         <option value="">Select Section</option>
-                        <?php foreach ($available_sections as $section): ?>
-                            <option value="<?php echo htmlspecialchars($section['section']); ?>" data-year="<?php echo $section['year_level']; ?>">
-                                <?php echo htmlspecialchars($section['section']); ?> (Year <?php echo $section['year_level']; ?>)
+                        <?php
+                        // Get unique section letters only (remove duplicates)
+                        $unique_sections = [];
+                        foreach ($available_sections as $section) {
+                            if (!in_array($section['section'], $unique_sections)) {
+                                $unique_sections[] = $section['section'];
+                            }
+                        }
+                        sort($unique_sections); // Sort alphabetically
+                        foreach ($unique_sections as $section_letter): ?>
+                            <option value="<?php echo htmlspecialchars($section_letter); ?>">
+                                <?php echo htmlspecialchars($section_letter); ?>
                             </option>
                         <?php endforeach; ?>
                     </select>
                 </div>
-                
+
                 <div>
                     <label for="assignYear" class="block text-sm font-medium text-gray-700 mb-1">Year Level</label>
                     <select id="assignYear" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
@@ -589,8 +662,16 @@ if ($filter !== 'all') {
                         <option value="4">4th Year</option>
                     </select>
                 </div>
+
+                <!-- Progress Indicator -->
+                <div id="assignProgress" class="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200" style="display: none;">
+                    <div class="text-blue-600 text-sm">
+                        <i data-lucide="clock" class="w-4 h-4 inline mr-1"></i>
+                        Processing assignment...
+                    </div>
+                </div>
             </div>
-            
+
             <div class="flex space-x-3 mt-6">
                 <button onclick="hideAssignSection()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors">
                     Cancel
@@ -599,7 +680,7 @@ if ($filter !== 'all') {
                     Add Section
                 </button>
             </div>
-            
+
             <input type="hidden" id="assignAdviserId" value="">
         </div>
     </div>

@@ -157,22 +157,68 @@ $current_academic_period_id = $current_period['id'] ?? 1;
 
 // Get submissions for adviser's assigned sections (current academic period only)
 if (!empty($adviser_sections)) {
-    // Build the sections condition dynamically
-    $section_placeholders = implode(',', array_fill(0, count($adviser_sections), '?'));
+    // Build flexible section matching conditions
+    $section_conditions = [];
+    $params = [$department];
+
+    foreach ($adviser_sections as $assigned_section) {
+        // Try exact match and partial matches
+        $section_conditions[] = "u.section = ?";
+        $params[] = $assigned_section;
+
+        // If section is like "C-4", also try "C" and "4"
+        if (strpos($assigned_section, '-') !== false) {
+            $parts = explode('-', $assigned_section);
+            foreach ($parts as $part) {
+                $section_conditions[] = "u.section = ?";
+                $params[] = trim($part);
+            }
+        }
+
+        // Also try partial matches using LIKE
+        $section_conditions[] = "u.section LIKE ?";
+        $params[] = '%' . $assigned_section . '%';
+    }
+
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+
     $query = "SELECT gs.*, u.first_name, u.last_name, u.student_id, u.section, u.year_level,
                      processor.first_name as processor_first_name, processor.last_name as processor_last_name
               FROM grade_submissions gs
               JOIN users u ON gs.user_id = u.id
               LEFT JOIN users processor ON gs.processed_by = processor.id
-              WHERE u.department = ? AND u.section IN ($section_placeholders) AND gs.academic_period_id = ?
+              WHERE u.department = ? AND $section_where AND gs.academic_period_id = ?
               ORDER BY gs.upload_date DESC";
 
-    $stmt = $db->prepare($query);
-    $params = [$department];
-    $params = array_merge($params, $adviser_sections);
     $params[] = $current_academic_period_id;
+    $stmt = $db->prepare($query);
     $stmt->execute($params);
     $submissions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Debug: Check what sections and students exist
+    $debug_query = "SELECT COUNT(*) as student_count, GROUP_CONCAT(DISTINCT section) as sections_found,
+                           GROUP_CONCAT(DISTINCT CONCAT(first_name, ' ', last_name, ' (', section, ')')) as students_list
+                    FROM users
+                    WHERE department = ? AND role = 'student'";
+    $debug_stmt = $db->prepare($debug_query);
+    $debug_stmt->execute([$department]);
+    $debug_result = $debug_stmt->fetch(PDO::FETCH_ASSOC);
+
+    // Debug: Check total submissions in the academic period
+    $total_submissions_query = "SELECT COUNT(*) as total_submissions FROM grade_submissions WHERE academic_period_id = ?";
+    $total_stmt = $db->prepare($total_submissions_query);
+    $total_stmt->execute([$current_academic_period_id]);
+    $total_result = $total_stmt->fetch(PDO::FETCH_ASSOC);
+
+    // Debug: Check all submissions regardless of section matching
+    $all_submissions_query = "SELECT gs.*, u.first_name, u.last_name, u.student_id, u.section, u.year_level
+                              FROM grade_submissions gs
+                              JOIN users u ON gs.user_id = u.id
+                              WHERE u.department = ? AND gs.academic_period_id = ?
+                              ORDER BY gs.upload_date DESC";
+    $all_stmt = $db->prepare($all_submissions_query);
+    $all_stmt->execute([$department, $current_academic_period_id]);
+    $all_submissions = $all_stmt->fetchAll(PDO::FETCH_ASSOC);
     
     // Extract grade counts for each submission
     foreach ($submissions as $index => $submission) {
@@ -391,7 +437,71 @@ function getStatusBadgeClass($status) {
                             <div class="text-center py-12">
                                 <i data-lucide="inbox" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
                                 <h4 class="text-xl font-medium text-gray-900 mb-2">No submissions found</h4>
-                                <p class="text-gray-500">No grade submissions match your current filter.</p>
+                                <?php if (empty($adviser_sections)): ?>
+                                    <p class="text-gray-500 mb-4">You haven't been assigned to any sections yet.</p>
+                                    <div class="bg-yellow-50 border border-yellow-200 rounded-xl p-4 mx-8">
+                                        <div class="flex items-start">
+                                            <i data-lucide="info" class="w-5 h-5 text-yellow-600 mr-3 mt-0.5 flex-shrink-0"></i>
+                                            <div class="text-left">
+                                                <h5 class="text-yellow-800 font-semibold text-sm mb-1">Section Assignment Required</h5>
+                                                <p class="text-yellow-700 text-sm">Contact your department chairperson to get assigned to student sections. Once assigned, you'll be able to view and process grade submissions from your students.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php else: ?>
+                                    <p class="text-gray-500 mb-4">No grade submissions found for your assigned sections.</p>
+                                    <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 mx-8 mb-4">
+                                        <div class="flex items-start">
+                                            <i data-lucide="users" class="w-5 h-5 text-blue-600 mr-3 mt-0.5 flex-shrink-0"></i>
+                                            <div class="text-left">
+                                                <h5 class="text-blue-800 font-semibold text-sm mb-1">Your Assigned Sections</h5>
+                                                <p class="text-blue-700 text-sm mb-2">
+                                                    You are assigned to sections:
+                                                    <?php foreach ($adviser_sections as $index => $section): ?>
+                                                        <span class="font-semibold"><?php echo htmlspecialchars($section); ?></span><?php if ($index < count($adviser_sections) - 1) echo ', '; ?>
+                                                    <?php endforeach; ?>
+                                                    <?php echo $adviser_year_level ? ' (Year ' . $adviser_year_level . ')' : ''; ?>
+                                                </p>
+                                                <p class="text-blue-700 text-sm">Students in these sections can submit their grade documents, which will appear here for your review and approval.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <?php if (isset($debug_result)): ?>
+                                        <div class="bg-gray-50 border border-gray-200 rounded-xl p-4 mx-8">
+                                            <div class="text-left">
+                                                <h5 class="text-gray-800 font-semibold text-sm mb-2">Debug Information</h5>
+                                                <div class="text-gray-700 text-sm space-y-1">
+                                                    <p><span class="font-medium">Total students in your department:</span> <?php echo $debug_result['student_count']; ?></p>
+                                                    <p><span class="font-medium">Sections found in database:</span> <?php echo $debug_result['sections_found'] ?: 'None'; ?></p>
+                                                    <p><span class="font-medium">Your department:</span> <?php echo htmlspecialchars($department); ?></p>
+                                                    <p><span class="font-medium">Current academic period ID:</span> <?php echo $current_academic_period_id; ?></p>
+                                                    <?php if (isset($total_result)): ?>
+                                                        <p><span class="font-medium">Total submissions this period:</span> <?php echo $total_result['total_submissions']; ?></p>
+                                                    <?php endif; ?>
+                                                    <?php if (isset($all_submissions) && !empty($all_submissions)): ?>
+                                                        <p><span class="font-medium">All submissions in your department:</span></p>
+                                                        <div class="ml-4 mt-1 space-y-1">
+                                                            <?php foreach ($all_submissions as $sub): ?>
+                                                                <p class="text-xs">• <?php echo htmlspecialchars($sub['first_name'] . ' ' . $sub['last_name']); ?> (Section: <?php echo htmlspecialchars($sub['section'] ?: 'None'); ?>)</p>
+                                                            <?php endforeach; ?>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                    <?php if (isset($debug_result['students_list']) && $debug_result['students_list']): ?>
+                                                        <p><span class="font-medium">Students in your department:</span></p>
+                                                        <div class="ml-4 mt-1 text-xs">
+                                                            <?php
+                                                            $students = explode(',', $debug_result['students_list']);
+                                                            foreach ($students as $student): ?>
+                                                                <p>• <?php echo htmlspecialchars(trim($student)); ?></p>
+                                                            <?php endforeach; ?>
+                                                        </div>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    <?php endif; ?>
+                                <?php endif; ?>
                             </div>
                         </div>
                     <?php else: ?>

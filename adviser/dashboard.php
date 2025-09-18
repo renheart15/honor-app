@@ -95,27 +95,51 @@ if ($adviser_section) {
 $stmt->execute();
 $stats['students_with_gwa'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
-// Recent submissions
-$query = "SELECT gs.*, u.first_name, u.last_name, u.student_id, u.section 
-          FROM grade_submissions gs 
-          JOIN users u ON gs.user_id = u.id 
-          WHERE u.department = :department 
-          ORDER BY gs.upload_date DESC 
-          LIMIT 5";
-$stmt = $db->prepare($query);
-$stmt->bindParam(':department', $department);
+// Recent submissions from adviser's section
+if ($adviser_section) {
+    $query = "SELECT gs.*, u.first_name, u.last_name, u.student_id, u.section
+              FROM grade_submissions gs
+              JOIN users u ON gs.user_id = u.id
+              WHERE u.department = :department AND u.section = :section
+              ORDER BY gs.upload_date DESC
+              LIMIT 5";
+    $stmt = $db->prepare($query);
+    $stmt->bindParam(':department', $department);
+    $stmt->bindParam(':section', $adviser_section);
+} else {
+    $query = "SELECT gs.*, u.first_name, u.last_name, u.student_id, u.section
+              FROM grade_submissions gs
+              JOIN users u ON gs.user_id = u.id
+              WHERE u.department = :department
+              ORDER BY gs.upload_date DESC
+              LIMIT 5";
+    $stmt = $db->prepare($query);
+    $stmt->bindParam(':department', $department);
+}
 $stmt->execute();
 $recent_submissions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Recent applications
-$query = "SELECT ha.*, u.first_name, u.last_name, u.student_id, u.section 
-          FROM honor_applications ha 
-          JOIN users u ON ha.user_id = u.id 
-          WHERE u.department = :department 
-          ORDER BY ha.submitted_at DESC 
-          LIMIT 5";
-$stmt = $db->prepare($query);
-$stmt->bindParam(':department', $department);
+// Recent applications from adviser's section
+if ($adviser_section) {
+    $query = "SELECT ha.*, u.first_name, u.last_name, u.student_id, u.section
+              FROM honor_applications ha
+              JOIN users u ON ha.user_id = u.id
+              WHERE u.department = :department AND u.section = :section
+              ORDER BY ha.submitted_at DESC
+              LIMIT 5";
+    $stmt = $db->prepare($query);
+    $stmt->bindParam(':department', $department);
+    $stmt->bindParam(':section', $adviser_section);
+} else {
+    $query = "SELECT ha.*, u.first_name, u.last_name, u.student_id, u.section
+              FROM honor_applications ha
+              JOIN users u ON ha.user_id = u.id
+              WHERE u.department = :department
+              ORDER BY ha.submitted_at DESC
+              LIMIT 5";
+    $stmt = $db->prepare($query);
+    $stmt->bindParam(':department', $department);
+}
 $stmt->execute();
 $recent_applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>

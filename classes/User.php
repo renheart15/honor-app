@@ -12,6 +12,9 @@ class User {
     public $middle_name;
     public $role;
     public $department;
+    public $college;
+    public $course;
+    public $major;
     public $year_level;
     public $section;
     public $contact_number;
@@ -25,11 +28,11 @@ class User {
     }
 
     public function create() {
-        $query = "INSERT INTO " . $this->table_name . " 
-                SET student_id=:student_id, email=:email, password=:password, 
+        $query = "INSERT INTO " . $this->table_name . "
+                SET student_id=:student_id, email=:email, password=:password,
                     first_name=:first_name, last_name=:last_name, middle_name=:middle_name,
-                    role=:role, department=:department, year_level=:year_level, 
-                    section=:section, contact_number=:contact_number, address=:address";
+                    role=:role, department=:department, college=:college, course=:course, major=:major,
+                    year_level=:year_level, section=:section, contact_number=:contact_number, address=:address";
 
         $stmt = $this->conn->prepare($query);
 
@@ -45,6 +48,9 @@ class User {
         $this->middle_name = htmlspecialchars(strip_tags($this->middle_name ?? ''));
         $this->role = htmlspecialchars(strip_tags($this->role ?? ''));
         $this->department = htmlspecialchars(strip_tags($this->department ?? ''));
+        $this->college = htmlspecialchars(strip_tags($this->college ?? ''));
+        $this->course = htmlspecialchars(strip_tags($this->course ?? ''));
+        $this->major = htmlspecialchars(strip_tags($this->major ?? ''));
         $this->contact_number = htmlspecialchars(strip_tags($this->contact_number ?? ''));
         $this->address = htmlspecialchars(strip_tags($this->address ?? ''));
 
@@ -57,6 +63,9 @@ class User {
         $stmt->bindParam(":middle_name", $this->middle_name);
         $stmt->bindParam(":role", $this->role);
         $stmt->bindParam(":department", $this->department);
+        $stmt->bindParam(":college", $this->college);
+        $stmt->bindParam(":course", $this->course);
+        $stmt->bindParam(":major", $this->major);
         $stmt->bindValue(":year_level", $this->year_level, $this->year_level === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
         $stmt->bindValue(":section", $this->section, $this->section === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
         $stmt->bindParam(":contact_number", $this->contact_number);
@@ -80,6 +89,15 @@ class User {
         $query = "SELECT * FROM " . $this->table_name . " WHERE email = :email LIMIT 1";
         $stmt = $this->conn->prepare($query);
         $stmt->bindParam(":email", $email);
+        $stmt->execute();
+
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    public function findByStudentId($student_id) {
+        $query = "SELECT * FROM " . $this->table_name . " WHERE student_id = :student_id LIMIT 1";
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":student_id", $student_id);
         $stmt->execute();
 
         return $stmt->fetch(PDO::FETCH_ASSOC);

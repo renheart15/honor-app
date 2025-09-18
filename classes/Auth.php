@@ -27,27 +27,43 @@ class Auth {
     }
 
     public function register($data) {
-        // Check if email already exists
-        if ($this->user->findByEmail($data['email'])) {
-            return ['success' => false, 'message' => 'Email already exists'];
+        try {
+            // Check if email already exists
+            if ($this->user->findByEmail($data['email'])) {
+                return ['success' => false, 'message' => 'Email already exists'];
+            }
+
+            // Check if student ID already exists (for students only)
+            if (($data['role'] ?? 'student') === 'student' && !empty($data['student_id'])) {
+                $existing_student = $this->user->findByStudentId($data['student_id']);
+                if ($existing_student) {
+                    return ['success' => false, 'message' => 'Student ID already exists'];
+                }
+            }
+
+            // Set user properties
+            $this->user->student_id = $data['student_id'];
+            $this->user->email = $data['email'];
+            $this->user->password = $data['password'];
+            $this->user->first_name = $data['first_name'];
+            $this->user->last_name = $data['last_name'];
+            $this->user->role = $data['role'] ?? 'student';
+            $this->user->department = $data['department'];
+            $this->user->college = $data['college'] ?? null;
+            $this->user->course = $data['course'] ?? null;
+            $this->user->major = $data['major'] ?? null;
+            $this->user->year_level = $data['year_level'];
+            $this->user->section = $data['section'];
+
+            if ($this->user->create()) {
+                return ['success' => true, 'message' => 'Registration successful'];
+            }
+
+            return ['success' => false, 'message' => 'Registration failed - database error'];
+        } catch (Exception $e) {
+            error_log("Registration error: " . $e->getMessage());
+            return ['success' => false, 'message' => 'Registration failed - system error'];
         }
-
-        // Set user properties
-        $this->user->student_id = $data['student_id'];
-        $this->user->email = $data['email'];
-        $this->user->password = $data['password'];
-        $this->user->first_name = $data['first_name'];
-        $this->user->last_name = $data['last_name'];
-        $this->user->role = $data['role'] ?? 'student';
-        $this->user->department = $data['department'];
-        $this->user->year_level = $data['year_level'];
-        $this->user->section = $data['section'];
-
-        if ($this->user->create()) {
-            return ['success' => true, 'message' => 'Registration successful'];
-        }
-
-        return ['success' => false, 'message' => 'Registration failed'];
     }
 
     public function logout() {

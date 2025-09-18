@@ -13,30 +13,63 @@ $db = $database->getConnection();
 $adviser_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
 
-// Get adviser's assigned section and year level
+// Get adviser's assigned sections and year level
 $query = "SELECT section, year_level FROM users WHERE id = :adviser_id";
 $stmt = $db->prepare($query);
 $stmt->bindParam(':adviser_id', $adviser_id);
 $stmt->execute();
 $adviser_info = $stmt->fetch(PDO::FETCH_ASSOC);
 
-$adviser_section = $adviser_info['section'] ?? null;
+$adviser_sections = [];
+if (!empty($adviser_info['section'])) {
+    // Try to decode as JSON first
+    $sections_data = json_decode($adviser_info['section'], true);
+    if (!is_array($sections_data)) {
+        // If not JSON, treat as comma-separated
+        $sections_data = array_map('trim', explode(',', $adviser_info['section']));
+    }
+    $adviser_sections = $sections_data;
+}
+
 $adviser_year_level = $adviser_info['year_level'] ?? null;
 
-// Get students in adviser's section with their GWA
-// Only show students if adviser has an assigned section
-if ($adviser_section) {
+// Get students in adviser's sections with their GWA
+// Only show students if adviser has assigned sections
+if (!empty($adviser_sections)) {
+    // Build flexible section matching conditions
+    $section_conditions = [];
+    $params = [$department];
+
+    foreach ($adviser_sections as $assigned_section) {
+        // Try exact match and partial matches
+        $section_conditions[] = "u.section = ?";
+        $params[] = $assigned_section;
+
+        // If section is like "C-4", also try "C" and "4"
+        if (strpos($assigned_section, '-') !== false) {
+            $parts = explode('-', $assigned_section);
+            foreach ($parts as $part) {
+                $section_conditions[] = "u.section = ?";
+                $params[] = trim($part);
+            }
+        }
+
+        // Also try partial matches using LIKE
+        $section_conditions[] = "u.section LIKE ?";
+        $params[] = '%' . $assigned_section . '%';
+    }
+
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+
     $query = "SELECT u.*, gwa.gwa, gwa.calculated_at,
                      (SELECT COUNT(*) FROM grade_submissions gs WHERE gs.user_id = u.id) as submission_count,
                      (SELECT COUNT(*) FROM honor_applications ha WHERE ha.user_id = u.id) as application_count
-              FROM users u 
+              FROM users u
               LEFT JOIN gwa_calculations gwa ON u.id = gwa.user_id
-              WHERE u.role = 'student' AND u.department = :department AND u.section = :section AND u.status = 'active'
+              WHERE u.role = 'student' AND u.department = ? AND $section_where AND u.status = 'active'
               ORDER BY u.last_name, u.first_name";
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
-    $stmt->execute();
+    $stmt->execute($params);
     $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } else {
     // If no section assigned, show NO students
@@ -167,16 +200,19 @@ if (!empty($search)) {
                         </button>
                         <div class="ml-4 md:ml-0">
                             <h1 class="text-2xl font-bold text-gray-900">Students</h1>
-                            <?php if ($adviser_section): ?>
+                            <?php if (!empty($adviser_sections)): ?>
                                 <p class="text-sm text-gray-500">
-                                    Managing section <span class="font-semibold text-primary-600"><?php echo htmlspecialchars($adviser_section); ?></span> 
-                                    <?php echo $adviser_year_level ? '(Year ' . $adviser_year_level . ')' : ''; ?> - 
+                                    Managing sections:
+                                    <?php foreach ($adviser_sections as $index => $section): ?>
+                                        <span class="font-semibold text-primary-600"><?php echo htmlspecialchars($section); ?></span><?php if ($index < count($adviser_sections) - 1) echo ', '; ?>
+                                    <?php endforeach; ?>
+                                    <?php echo $adviser_year_level ? ' (Year ' . $adviser_year_level . ')' : ''; ?> -
                                     <?php echo count($students); ?> students
                                 </p>
                             <?php else: ?>
                                 <div class="flex items-center">
                                     <p class="text-sm text-gray-500 mr-2">
-                                        Viewing all department students - <?php echo count($students); ?> total
+                                        No students available - section assignment required
                                     </p>
                                     <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
                                         <i data-lucide="alert-circle" class="w-3 h-3 mr-1"></i>
@@ -208,7 +244,7 @@ if (!empty($search)) {
             <!-- Main Content Area -->
             <main class="flex-1 overflow-y-auto">
                 <div class="p-4 sm:p-6 lg:p-8">
-                    <?php if (!$adviser_section): ?>
+                    <?php if (empty($adviser_sections)): ?>
                         <!-- Unassigned Adviser Notice -->
                         <div class="mb-6 bg-amber-50 border-l-4 border-amber-400 p-4 rounded-r-lg">
                             <div class="flex items-start">
@@ -271,7 +307,7 @@ if (!empty($search)) {
                                                     </td>
                                                     <td class="px-6 py-4 whitespace-nowrap">
                                                         <div class="text-sm font-bold <?php echo !empty($student['gwa']) ? ($student['gwa'] <= 1.45 ? 'text-green-600' : ($student['gwa'] <= 1.75 ? 'text-blue-600' : 'text-gray-900')) : 'text-gray-400'; ?>">
-                                                            <?php echo !empty($student['gwa']) ? formatGWA($student['gwa']) : 'No GWA'; ?>
+                                                            <?php echo !empty($student['gwa']) ? number_format(floor($student['gwa'] * 100) / 100, 2) : 'No GWA'; ?>
                                                         </div>
                                                         <?php if (!empty($student['calculated_at'])): ?>
                                                             <div class="text-xs text-gray-400">
