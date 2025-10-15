@@ -81,9 +81,7 @@ if (isset($_GET['success']) && $_GET['success'] == '1') {
         <div class="hidden md:flex md:w-64 md:flex-col">
             <div class="flex flex-col flex-grow bg-white border-r border-gray-200 pt-5 pb-4 overflow-y-auto">
                 <div class="flex items-center flex-shrink-0 px-4">
-                    <div class="w-8 h-8 bg-primary-600 rounded-xl flex items-center justify-center">
-                        <i data-lucide="graduation-cap" class="w-5 h-5 text-white"></i>
-                    </div>
+                    <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-8 h-8">
                     <span class="ml-2 text-xl font-bold text-gray-900">CTU Honor</span>
                 </div>
                 

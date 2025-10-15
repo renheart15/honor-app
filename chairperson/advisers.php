@@ -284,9 +284,7 @@ if ($filter !== 'all') {
         <div class="hidden md:flex md:w-64 md:flex-col">
             <div class="flex flex-col flex-grow bg-white border-r border-gray-200 pt-5 pb-4 overflow-y-auto">
                 <div class="flex items-center flex-shrink-0 px-4">
-                    <div class="w-8 h-8 bg-purple-600 rounded-xl flex items-center justify-center">
-                        <i data-lucide="graduation-cap" class="w-5 h-5 text-white"></i>
-                    </div>
+                    <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-8 h-8">
                     <span class="ml-2 text-xl font-bold text-gray-900">CTU Honor</span>
                 </div>
                 
@@ -440,7 +438,7 @@ if ($filter !== 'all') {
                                                                 $display_section = $section_letter . ($year_level ? " (Year {$year_level})" : "");
                                                                 ?>
                                                                 <span class="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-100 text-green-800 font-medium">
-                                                                    <?php echo htmlspecialchars($display_section); ?>
+                                                                    <?php echo htmlspecialchars(formatSectionDisplay($display_section)); ?>
                                                                     <button onclick="removeSection(<?php echo $adviser['id']; ?>, '<?php echo htmlspecialchars($section, ENT_QUOTES); ?>')"
                                                                             class="ml-1 text-green-600 hover:text-green-800" title="Remove section">
                                                                         <i data-lucide="x" class="w-3 h-3"></i>
@@ -646,7 +644,7 @@ if ($filter !== 'all') {
                         sort($unique_sections); // Sort alphabetically
                         foreach ($unique_sections as $section_letter): ?>
                             <option value="<?php echo htmlspecialchars($section_letter); ?>">
-                                <?php echo htmlspecialchars($section_letter); ?>
+                                <?php echo htmlspecialchars(formatSectionDisplay($section_letter)); ?>
                             </option>
                         <?php endforeach; ?>
                     </select>

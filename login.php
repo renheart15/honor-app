@@ -108,7 +108,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         <!-- Header -->
         <div class="text-center">
             <div class="mx-auto w-16 h-16 bg-ctu-600 rounded-2xl flex items-center justify-center mb-6">
-                <i data-lucide="graduation-cap" class="w-8 h-8 text-white"></i>
+                <img src="img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-16 h-16">
             </div>
             <h2 class="text-3xl font-bold text-gray-900 mb-2">Welcome back</h2>
             <p class="text-gray-600">Sign in to your CTU Honor System account</p>

@@ -262,7 +262,7 @@ if (isset($_GET['approved'])) {
                                 </div>
                                 <div>
                                     <p class="text-sm font-medium text-gray-500">Section</p>
-                                    <p class="text-lg font-semibold text-gray-900"><?php echo htmlspecialchars($submission['section']); ?></p>
+                                    <p class="text-lg font-semibold text-gray-900"><?php echo htmlspecialchars(formatSectionDisplay($submission['section'])); ?></p>
                                 </div>
                                 <div>
                                     <p class="text-sm font-medium text-gray-500">Year Level</p>

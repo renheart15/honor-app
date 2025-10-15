@@ -197,9 +197,7 @@ if ($filter !== 'all') {
         <div class="hidden md:flex md:w-64 md:flex-col">
             <div class="flex flex-col flex-grow bg-white border-r border-gray-200 pt-5 pb-4 overflow-y-auto">
                 <div class="flex items-center flex-shrink-0 px-4">
-                    <div class="w-8 h-8 bg-green-600 rounded-xl flex items-center justify-center">
-                        <i data-lucide="graduation-cap" class="w-5 h-5 text-white"></i>
-                    </div>
+                    <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-8 h-8">
                     <span class="ml-2 text-xl font-bold text-gray-900">CTU Honor</span>
                 </div>
                 
@@ -234,6 +232,10 @@ if ($filter !== 'all') {
                         <i data-lucide="users" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Students
                     </a>
+                    <a href="rankings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="award" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Honor Rankings
+                    </a>
                     <a href="reports.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="bar-chart-3" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
@@ -265,7 +267,7 @@ if ($filter !== 'all') {
                                 <p class="text-sm text-gray-500">
                                     Processing applications from sections:
                                     <?php foreach ($adviser_sections as $index => $section): ?>
-                                        <span class="font-semibold text-primary-600"><?php echo htmlspecialchars($section); ?></span><?php if ($index < count($adviser_sections) - 1) echo ', '; ?>
+                                        <span class="font-semibold text-primary-600"><?php echo htmlspecialchars(formatSectionDisplay($section)); ?></span><?php if ($index < count($adviser_sections) - 1) echo ', '; ?>
                                     <?php endforeach; ?>
                                     <?php echo $adviser_year_level ? ' (Year ' . $adviser_year_level . ')' : ''; ?> -
                                     <?php echo count($applications); ?> applications
@@ -367,7 +369,7 @@ if ($filter !== 'all') {
                                                                 <?php echo htmlspecialchars($application['first_name'] . ' ' . $application['last_name']); ?>
                                                             </div>
                                                             <div class="text-sm text-gray-500">
-                                                                <?php echo htmlspecialchars($application['student_id']); ?> • <?php echo htmlspecialchars($application['section']); ?>
+                                                                <?php echo htmlspecialchars($application['student_id']); ?> • <?php echo htmlspecialchars(formatSectionDisplay($application['section'])); ?>
                                                             </div>
                                                         </div>
                                                     </div>

@@ -20,92 +20,126 @@ $stmt->bindParam(':adviser_id', $adviser_id);
 $stmt->execute();
 $adviser_info = $stmt->fetch(PDO::FETCH_ASSOC);
 
+// Decode JSON section if it exists
 $adviser_section = $adviser_info['section'] ?? null;
+if ($adviser_section) {
+    $sections_array = json_decode($adviser_section, true);
+    $adviser_section = is_array($sections_array) && !empty($sections_array) ? $sections_array[0] : $adviser_section;
+}
 $adviser_year_level = $adviser_info['year_level'] ?? null;
+
+$adviser_section_display = $adviser_section ? formatSectionDisplay($adviser_section) : null;
+
+// Build flexible section matching conditions
+$section_conditions = [];
+$section_params = [];
+if ($adviser_section) {
+    // Try exact match and partial matches
+    $section_conditions[] = "u.section = ?";
+    $section_params[] = $adviser_section;
+
+    // If section is like "C-4", also try "C" and "4"
+    if (strpos($adviser_section, '-') !== false) {
+        $parts = explode('-', $adviser_section);
+        foreach ($parts as $part) {
+            $section_conditions[] = "u.section = ?";
+            $section_params[] = trim($part);
+        }
+    }
+
+    // Also try partial matches using LIKE
+    $section_conditions[] = "u.section LIKE ?";
+    $section_params[] = '%' . $adviser_section . '%';
+}
 
 // Get statistics for adviser's assigned section only
 $stats = [];
 
 // Total students in adviser's section
 if ($adviser_section) {
-    $query = "SELECT COUNT(*) as count FROM users WHERE role = 'student' AND department = :department AND section = :section AND status = 'active'";
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+    $query = "SELECT COUNT(*) as count FROM users u WHERE u.role = 'student' AND u.department = ? AND $section_where AND u.status = 'active'";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
     // If no section assigned, show department-wide
     $query = "SELECT COUNT(*) as count FROM users WHERE role = 'student' AND department = :department AND status = 'active'";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $stats['total_students'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Pending grade submissions from adviser's section
 if ($adviser_section) {
-    $query = "SELECT COUNT(*) as count FROM grade_submissions gs 
-              JOIN users u ON gs.user_id = u.id 
-              WHERE gs.status = 'pending' AND u.department = :department AND u.section = :section";
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+    $query = "SELECT COUNT(*) as count FROM grade_submissions gs
+              JOIN users u ON gs.user_id = u.id
+              WHERE gs.status = 'pending' AND u.department = ? AND $section_where";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
-    $query = "SELECT COUNT(*) as count FROM grade_submissions gs 
-              JOIN users u ON gs.user_id = u.id 
+    $query = "SELECT COUNT(*) as count FROM grade_submissions gs
+              JOIN users u ON gs.user_id = u.id
               WHERE gs.status = 'pending' AND u.department = :department";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $stats['pending_submissions'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Honor applications to review from adviser's section
 if ($adviser_section) {
-    $query = "SELECT COUNT(*) as count FROM honor_applications ha 
-              JOIN users u ON ha.user_id = u.id 
-              WHERE ha.status = 'submitted' AND u.department = :department AND u.section = :section";
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+    $query = "SELECT COUNT(*) as count FROM honor_applications ha
+              JOIN users u ON ha.user_id = u.id
+              WHERE ha.status = 'submitted' AND u.department = ? AND $section_where";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
-    $query = "SELECT COUNT(*) as count FROM honor_applications ha 
-              JOIN users u ON ha.user_id = u.id 
+    $query = "SELECT COUNT(*) as count FROM honor_applications ha
+              JOIN users u ON ha.user_id = u.id
               WHERE ha.status = 'submitted' AND u.department = :department";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $stats['pending_applications'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Students with GWA in adviser's section
 if ($adviser_section) {
-    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa 
-              JOIN users u ON gwa.user_id = u.id 
-              WHERE u.department = :department AND u.section = :section AND u.status = 'active'";
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
+              WHERE u.department = ? AND $section_where AND u.status = 'active'";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
-    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa 
-              JOIN users u ON gwa.user_id = u.id 
+    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
               WHERE u.department = :department AND u.status = 'active'";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $stats['students_with_gwa'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Recent submissions from adviser's section
 if ($adviser_section) {
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
     $query = "SELECT gs.*, u.first_name, u.last_name, u.student_id, u.section
               FROM grade_submissions gs
               JOIN users u ON gs.user_id = u.id
-              WHERE u.department = :department AND u.section = :section
+              WHERE u.department = ? AND $section_where
               ORDER BY gs.upload_date DESC
               LIMIT 5";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
     $query = "SELECT gs.*, u.first_name, u.last_name, u.student_id, u.section
               FROM grade_submissions gs
@@ -115,21 +149,22 @@ if ($adviser_section) {
               LIMIT 5";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $recent_submissions = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Recent applications from adviser's section
 if ($adviser_section) {
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
     $query = "SELECT ha.*, u.first_name, u.last_name, u.student_id, u.section
               FROM honor_applications ha
               JOIN users u ON ha.user_id = u.id
-              WHERE u.department = :department AND u.section = :section
+              WHERE u.department = ? AND $section_where
               ORDER BY ha.submitted_at DESC
               LIMIT 5";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
     $query = "SELECT ha.*, u.first_name, u.last_name, u.student_id, u.section
               FROM honor_applications ha
@@ -139,8 +174,8 @@ if ($adviser_section) {
               LIMIT 5";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $recent_applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
@@ -175,9 +210,7 @@ $recent_applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
         <div class="hidden md:flex md:w-64 md:flex-col">
             <div class="flex flex-col flex-grow bg-white border-r border-gray-200 pt-5 pb-4 overflow-y-auto">
                 <div class="flex items-center flex-shrink-0 px-4">
-                    <div class="w-8 h-8 bg-green-600 rounded-xl flex items-center justify-center">
-                        <i data-lucide="graduation-cap" class="w-5 h-5 text-white"></i>
-                    </div>
+                    <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-8 h-8">
                     <span class="ml-2 text-xl font-bold text-gray-900">CTU Honor</span>
                 </div>
                 
@@ -212,6 +245,10 @@ $recent_applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         <i data-lucide="users" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Students
                     </a>
+                    <a href="rankings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="award" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Honor Rankings
+                    </a>
                     <a href="reports.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="bar-chart-3" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
@@ -240,7 +277,7 @@ $recent_applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         <div class="ml-4 md:ml-0">
                             <h1 class="text-2xl font-bold text-gray-900">Adviser Dashboard</h1>
                             <?php if ($adviser_section): ?>
-                                <p class="text-sm text-gray-500">Welcome back, <?php echo $_SESSION['first_name']; ?>! Managing section <span class="font-semibold text-primary-600"><?php echo htmlspecialchars($adviser_section); ?></span> <?php echo $adviser_year_level ? '(Year ' . $adviser_year_level . ')' : ''; ?> in <?php echo $department; ?>.</p>
+                                <p class="text-sm text-gray-500">Welcome back, <?php echo $_SESSION['first_name']; ?>! Managing section <span class="font-semibold text-primary-600"><?php echo htmlspecialchars($adviser_section_display); ?></span> <?php echo $adviser_year_level ? '(Year ' . $adviser_year_level . ')' : ''; ?> in <?php echo $department; ?>.</p>
                             <?php else: ?>
                                 <div class="mt-2 p-3 bg-orange-50 border border-orange-200 rounded-lg">
                                     <div class="flex items-center">
@@ -331,7 +368,7 @@ $recent_applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                                 <div>
                                                     <h4 class="font-semibold text-gray-900"><?php echo htmlspecialchars($submission['first_name'] . ' ' . $submission['last_name']); ?></h4>
                                                     <p class="text-sm text-gray-600">
-                                                        <?php echo htmlspecialchars($submission['student_id']); ?> • <?php echo htmlspecialchars($submission['section']); ?>
+                                                        <?php echo htmlspecialchars($submission['student_id']); ?> • <?php echo htmlspecialchars(formatSectionDisplay($submission['section'])); ?>
                                                     </p>
                                                     <p class="text-xs text-gray-500">
                                                         <?php echo date('M d, Y g:i A', strtotime($submission['upload_date'])); ?>

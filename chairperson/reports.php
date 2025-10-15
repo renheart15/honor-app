@@ -167,9 +167,7 @@ $adviser_performance = $stmt->fetchAll(PDO::FETCH_ASSOC);
         <div class="hidden md:flex md:w-64 md:flex-col">
             <div class="flex flex-col flex-grow bg-white border-r border-gray-200 pt-5 pb-4 overflow-y-auto">
                 <div class="flex items-center flex-shrink-0 px-4">
-                    <div class="w-8 h-8 bg-purple-600 rounded-xl flex items-center justify-center">
-                        <i data-lucide="graduation-cap" class="w-5 h-5 text-white"></i>
-                    </div>
+                    <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-8 h-8">
                     <span class="ml-2 text-xl font-bold text-gray-900">CTU Honor</span>
                 </div>
                 
@@ -386,7 +384,7 @@ $adviser_performance = $stmt->fetchAll(PDO::FETCH_ASSOC);
                                                 </div>
                                                 <div class="ml-3">
                                                     <h4 class="font-semibold text-gray-900"><?php echo htmlspecialchars($student['first_name'] . ' ' . $student['last_name']); ?></h4>
-                                                    <p class="text-sm text-gray-500"><?php echo htmlspecialchars($student['student_id'] . ' • ' . $student['section']); ?></p>
+                                                    <p class="text-sm text-gray-500"><?php echo htmlspecialchars($student['student_id'] . ' • ' . formatSectionDisplay($student['section'])); ?></p>
                                                 </div>
                                             </div>
                                             <div class="text-right">

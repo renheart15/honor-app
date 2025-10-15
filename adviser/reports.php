@@ -23,75 +23,107 @@ $adviser_info = $stmt->fetch(PDO::FETCH_ASSOC);
 $adviser_section = $adviser_info['section'] ?? null;
 $adviser_year_level = $adviser_info['year_level'] ?? null;
 
+// Decode JSON section if it exists
+if ($adviser_section) {
+    $sections_array = json_decode($adviser_section, true);
+    $adviser_section = is_array($sections_array) && !empty($sections_array) ? $sections_array[0] : $adviser_section;
+}
+
+// Build flexible section matching conditions
+$section_conditions = [];
+$section_params = [];
+if ($adviser_section) {
+    // Try exact match and partial matches
+    $section_conditions[] = "u.section = ?";
+    $section_params[] = $adviser_section;
+
+    // If section is like "C-4", also try "C" and "4"
+    if (strpos($adviser_section, '-') !== false) {
+        $parts = explode('-', $adviser_section);
+        foreach ($parts as $part) {
+            $section_conditions[] = "u.section = ?";
+            $section_params[] = trim($part);
+        }
+    }
+
+    // Also try partial matches using LIKE
+    $section_conditions[] = "u.section LIKE ?";
+    $section_params[] = '%' . $adviser_section . '%';
+}
+
 // Get section statistics
 $stats = [];
 
 // Total students in adviser's section
 if ($adviser_section) {
-    $query = "SELECT COUNT(*) as count FROM users WHERE role = 'student' AND department = :department AND section = :section AND status = 'active'";
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+    $query = "SELECT COUNT(*) as count FROM users u WHERE u.role = 'student' AND u.department = ? AND $section_where AND u.status = 'active'";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
     $query = "SELECT COUNT(*) as count FROM users WHERE role = 'student' AND department = :department AND status = 'active'";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $stats['total_students'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Students with GWA in adviser's section
 if ($adviser_section) {
-    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa 
-              JOIN users u ON gwa.user_id = u.id 
-              WHERE u.department = :department AND u.section = :section AND u.status = 'active'";
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
+              WHERE u.department = ? AND $section_where AND u.status = 'active'";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
-    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa 
-              JOIN users u ON gwa.user_id = u.id 
+    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
               WHERE u.department = :department AND u.status = 'active'";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $stats['students_with_gwa'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Honor eligible students in adviser's section
 if ($adviser_section) {
-    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa 
-              JOIN users u ON gwa.user_id = u.id 
-              WHERE u.department = :department AND u.section = :section AND u.status = 'active' AND gwa.gwa <= 1.75";
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
+              WHERE u.department = ? AND $section_where AND u.status = 'active' AND gwa.gwa <= 1.75";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
-    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa 
-              JOIN users u ON gwa.user_id = u.id 
+    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
               WHERE u.department = :department AND u.status = 'active' AND gwa.gwa <= 1.75";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $stats['honor_eligible'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Dean's list students in adviser's section
 if ($adviser_section) {
-    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa 
-              JOIN users u ON gwa.user_id = u.id 
-              WHERE u.department = :department AND u.section = :section AND u.status = 'active' AND gwa.gwa <= 1.45";
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
+              WHERE u.department = ? AND $section_where AND u.status = 'active' AND gwa.gwa <= 1.45";
+    $params = array_merge([$department], $section_params);
     $stmt = $db->prepare($query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':section', $adviser_section);
+    $stmt->execute($params);
 } else {
-    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa 
-              JOIN users u ON gwa.user_id = u.id 
+    $query = "SELECT COUNT(DISTINCT gwa.user_id) as count FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
               WHERE u.department = :department AND u.status = 'active' AND gwa.gwa <= 1.45";
     $stmt = $db->prepare($query);
     $stmt->bindParam(':department', $department);
+    $stmt->execute();
 }
-$stmt->execute();
 $stats['deans_list'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // GWA distribution
@@ -130,20 +162,50 @@ $year_breakdown = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Recent activity
 $query = "SELECT 'submission' as type, gs.upload_date as date, u.first_name, u.last_name, gs.status
-          FROM grade_submissions gs 
-          JOIN users u ON gs.user_id = u.id 
+          FROM grade_submissions gs
+          JOIN users u ON gs.user_id = u.id
           WHERE u.department = :department
           UNION ALL
           SELECT 'application' as type, ha.submitted_at as date, u.first_name, u.last_name, ha.status
-          FROM honor_applications ha 
-          JOIN users u ON ha.user_id = u.id 
+          FROM honor_applications ha
+          JOIN users u ON ha.user_id = u.id
           WHERE u.department = :department
-          ORDER BY date DESC 
+          ORDER BY date DESC
           LIMIT 10";
 $stmt = $db->prepare($query);
 $stmt->bindParam(':department', $department);
 $stmt->execute();
 $recent_activity = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get Dean's List students for export
+$deans_list_students = [];
+if ($adviser_section) {
+    $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+    $query = "SELECT u.first_name, u.last_name, u.student_id, u.year_level, u.section, gwa.gwa
+              FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
+              WHERE u.department = ? AND $section_where AND u.status = 'active' AND gwa.gwa <= 1.75
+              ORDER BY u.year_level, gwa.gwa ASC, u.last_name ASC";
+    $params = array_merge([$department], $section_params);
+    $stmt = $db->prepare($query);
+    $stmt->execute($params);
+} else {
+    $query = "SELECT u.first_name, u.last_name, u.student_id, u.year_level, u.section, gwa.gwa
+              FROM gwa_calculations gwa
+              JOIN users u ON gwa.user_id = u.id
+              WHERE u.department = :department AND u.status = 'active' AND gwa.gwa <= 1.75
+              ORDER BY u.year_level, gwa.gwa ASC, u.last_name ASC";
+    $stmt = $db->prepare($query);
+    $stmt->bindParam(':department', $department);
+    $stmt->execute();
+}
+$deans_list_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get current academic period for export header
+$query = "SELECT * FROM academic_periods WHERE is_active = 1 LIMIT 1";
+$stmt = $db->prepare($query);
+$stmt->execute();
+$active_period = $stmt->fetch(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -152,8 +214,10 @@ $recent_activity = $stmt->fetchAll(PDO::FETCH_ASSOC);
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Reports - CTU Honor System</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script>
         tailwind.config = {
             theme: {
@@ -178,9 +242,7 @@ $recent_activity = $stmt->fetchAll(PDO::FETCH_ASSOC);
         <div class="hidden md:flex md:w-64 md:flex-col">
             <div class="flex flex-col flex-grow bg-white border-r border-gray-200 pt-5 pb-4 overflow-y-auto">
                 <div class="flex items-center flex-shrink-0 px-4">
-                    <div class="w-8 h-8 bg-green-600 rounded-xl flex items-center justify-center">
-                        <i data-lucide="graduation-cap" class="w-5 h-5 text-white"></i>
-                    </div>
+                    <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-8 h-8">
                     <span class="ml-2 text-xl font-bold text-gray-900">CTU Honor</span>
                 </div>
                 
@@ -215,6 +277,10 @@ $recent_activity = $stmt->fetchAll(PDO::FETCH_ASSOC);
                         <i data-lucide="users" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Students
                     </a>
+                    <a href="rankings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="award" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Honor Rankings
+                    </a>
                     <a href="reports.php" class="bg-green-50 border-r-2 border-green-600 text-green-700 group flex items-center px-2 py-2 text-sm font-medium rounded-l-xl">
                         <i data-lucide="bar-chart-3" class="text-green-500 mr-3 h-5 w-5"></i>
                         Reports
@@ -247,10 +313,23 @@ $recent_activity = $stmt->fetchAll(PDO::FETCH_ASSOC);
                     </div>
                     
                     <div class="flex items-center space-x-4">
-                        <button onclick="exportReport()" class="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors">
-                            <i data-lucide="download" class="w-4 h-4 inline mr-2"></i>
-                            Export Report
-                        </button>
+                        <div class="relative" x-data="{ open: false }">
+                            <button @click="open = !open" class="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors flex items-center">
+                                <i data-lucide="download" class="w-4 h-4 mr-2"></i>
+                                Export Report
+                                <i data-lucide="chevron-down" class="w-4 h-4 ml-2"></i>
+                            </button>
+                            <div x-show="open" @click.away="open = false" class="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-gray-200 py-2 z-10">
+                                <button onclick="exportCSV()" class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center">
+                                    <i data-lucide="file-text" class="w-4 h-4 mr-2"></i>
+                                    Export as CSV
+                                </button>
+                                <button onclick="exportPDF()" class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center">
+                                    <i data-lucide="file" class="w-4 h-4 mr-2"></i>
+                                    Export as PDF
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </header>
@@ -442,9 +521,151 @@ $recent_activity = $stmt->fetchAll(PDO::FETCH_ASSOC);
             }
         });
 
-        function exportReport() {
-            // Implement report export functionality
-            alert('Export functionality will be implemented');
+        function exportCSV() {
+            // Create CSV content
+            const stats = {
+                totalStudents: <?php echo $stats['total_students']; ?>,
+                withGWA: <?php echo $stats['students_with_gwa']; ?>,
+                honorEligible: <?php echo $stats['honor_eligible']; ?>,
+                deansList: <?php echo $stats['deans_list']; ?>
+            };
+
+            const gwaDistribution = <?php echo json_encode($gwa_distribution); ?>;
+            const yearBreakdown = <?php echo json_encode($year_breakdown); ?>;
+            const department = <?php echo json_encode($department); ?>;
+            const adviser = <?php echo json_encode($_SESSION['first_name'] . ' ' . $_SESSION['last_name']); ?>;
+            const date = new Date().toLocaleDateString();
+
+            let csv = 'CTU Honor System - Department Report\n';
+            csv += `Generated by: ${adviser}\n`;
+            csv += `Date: ${date}\n`;
+            csv += `Department: ${department}\n\n`;
+
+            csv += 'SUMMARY STATISTICS\n';
+            csv += 'Metric,Count\n';
+            csv += `Total Students,${stats.totalStudents}\n`;
+            csv += `Students with GWA,${stats.withGWA}\n`;
+            csv += `Honor Eligible,${stats.honorEligible}\n`;
+            csv += `Dean's List,${stats.deansList}\n\n`;
+
+            csv += 'GWA DISTRIBUTION\n';
+            csv += 'Category,Student Count\n';
+            gwaDistribution.forEach(item => {
+                csv += `"${item.grade_category}",${item.student_count}\n`;
+            });
+
+            csv += '\nYEAR LEVEL BREAKDOWN\n';
+            csv += 'Year Level,Student Count,Average GWA\n';
+            yearBreakdown.forEach(item => {
+                const avgGwa = item.avg_gwa ? parseFloat(item.avg_gwa).toFixed(2) : 'N/A';
+                csv += `Year ${item.year_level},${item.student_count},${avgGwa}\n`;
+            });
+
+            // Create download link
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+
+            link.setAttribute('href', url);
+            link.setAttribute('download', `Department_Report_${date.replace(/\//g, '-')}.csv`);
+            link.style.visibility = 'hidden';
+
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function exportPDF() {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            const stats = {
+                totalStudents: <?php echo $stats['total_students']; ?>,
+                withGWA: <?php echo $stats['students_with_gwa']; ?>,
+                honorEligible: <?php echo $stats['honor_eligible']; ?>,
+                deansList: <?php echo $stats['deans_list']; ?>
+            };
+
+            const gwaDistribution = <?php echo json_encode($gwa_distribution); ?>;
+            const yearBreakdown = <?php echo json_encode($year_breakdown); ?>;
+            const department = <?php echo json_encode($department); ?>;
+            const adviser = <?php echo json_encode($_SESSION['first_name'] . ' ' . $_SESSION['last_name']); ?>;
+            const date = new Date().toLocaleDateString();
+
+            // Title
+            doc.setFontSize(18);
+            doc.setFont(undefined, 'bold');
+            doc.text('CTU Honor System', 105, 20, { align: 'center' });
+            doc.setFontSize(14);
+            doc.text('Department Report', 105, 28, { align: 'center' });
+
+            // Metadata
+            doc.setFontSize(10);
+            doc.setFont(undefined, 'normal');
+            doc.text(`Generated by: ${adviser}`, 20, 40);
+            doc.text(`Date: ${date}`, 20, 46);
+            doc.text(`Department: ${department}`, 20, 52);
+
+            // Summary Statistics
+            doc.setFontSize(12);
+            doc.setFont(undefined, 'bold');
+            doc.text('Summary Statistics', 20, 65);
+
+            doc.setFontSize(10);
+            doc.setFont(undefined, 'normal');
+            let y = 73;
+            doc.text(`Total Students: ${stats.totalStudents}`, 25, y);
+            y += 6;
+            doc.text(`Students with GWA: ${stats.withGWA}`, 25, y);
+            y += 6;
+            doc.text(`Honor Eligible: ${stats.honorEligible}`, 25, y);
+            y += 6;
+            doc.text(`Dean's List: ${stats.deansList}`, 25, y);
+            y += 12;
+
+            // GWA Distribution
+            doc.setFontSize(12);
+            doc.setFont(undefined, 'bold');
+            doc.text('GWA Distribution', 20, y);
+            y += 8;
+
+            doc.setFontSize(10);
+            doc.setFont(undefined, 'normal');
+            gwaDistribution.forEach(item => {
+                if (y > 270) {
+                    doc.addPage();
+                    y = 20;
+                }
+                doc.text(`${item.grade_category}: ${item.student_count} students`, 25, y);
+                y += 6;
+            });
+
+            // Year Level Breakdown
+            y += 6;
+            if (y > 250) {
+                doc.addPage();
+                y = 20;
+            }
+
+            doc.setFontSize(12);
+            doc.setFont(undefined, 'bold');
+            doc.text('Year Level Breakdown', 20, y);
+            y += 8;
+
+            doc.setFontSize(10);
+            doc.setFont(undefined, 'normal');
+            yearBreakdown.forEach(item => {
+                if (y > 270) {
+                    doc.addPage();
+                    y = 20;
+                }
+                const avgGwa = item.avg_gwa ? parseFloat(item.avg_gwa).toFixed(2) : 'N/A';
+                doc.text(`Year ${item.year_level}: ${item.student_count} students (Avg GWA: ${avgGwa})`, 25, y);
+                y += 6;
+            });
+
+            // Save PDF
+            doc.save(`Department_Report_${date.replace(/\//g, '-')}.pdf`);
         }
     </script>
 </body>

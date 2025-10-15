@@ -280,9 +280,7 @@ if ($selected_period_id) {
         <div class="hidden md:flex md:w-64 md:flex-col">
             <div class="flex flex-col flex-grow bg-white border-r border-gray-200 pt-5 pb-4 overflow-y-auto">
                 <div class="flex items-center flex-shrink-0 px-4">
-                    <div class="w-8 h-8 bg-purple-600 rounded-xl flex items-center justify-center">
-                        <i data-lucide="graduation-cap" class="w-5 h-5 text-white"></i>
-                    </div>
+                    <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-8 h-8">
                     <span class="ml-2 text-xl font-bold text-gray-900">CTU Honor</span>
                 </div>
 
@@ -415,7 +413,7 @@ if ($selected_period_id) {
                                         <option value="all" <?php echo $section_filter === 'all' ? 'selected' : ''; ?>>All Sections</option>
                                         <?php foreach ($available_sections as $section): ?>
                                             <option value="<?php echo $section['section']; ?>" <?php echo $section_filter == $section['section'] ? 'selected' : ''; ?>>
-                                                <?php echo htmlspecialchars($section['section']); ?>
+                                                <?php echo htmlspecialchars(formatSectionDisplay($section['section'])); ?>
                                             </option>
                                         <?php endforeach; ?>
                                     </select>
@@ -527,7 +525,7 @@ if ($selected_period_id) {
                                                 </div>
                                             </td>
                                             <td class="px-6 py-4 whitespace-nowrap">
-                                                <span class="text-sm text-gray-900">Year <?php echo $ranking['year_level']; ?> - <?php echo htmlspecialchars($ranking['section']); ?></span>
+                                                <span class="text-sm text-gray-900"><?php echo $ranking['year_level'] . htmlspecialchars(formatSectionDisplay($ranking['section'])); ?></span>
                                             </td>
                                             <td class="px-6 py-4 whitespace-nowrap">
                                                 <?php if ($ranking['gwa'] !== null): ?>

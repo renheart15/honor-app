@@ -127,9 +127,7 @@ $student_gwa = $stmt->fetch(PDO::FETCH_ASSOC);
         <div class="hidden md:flex md:w-64 md:flex-col">
             <div class="flex flex-col flex-grow bg-white border-r border-gray-200 pt-5 pb-4 overflow-y-auto">
                 <div class="flex items-center flex-shrink-0 px-4">
-                    <div class="w-8 h-8 bg-primary-600 rounded-xl flex items-center justify-center">
-                        <i data-lucide="graduation-cap" class="w-5 h-5 text-white"></i>
-                    </div>
+                    <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-8 h-8">
                     <span class="ml-2 text-xl font-bold text-gray-900">CTU Honor</span>
                 </div>
                 
@@ -153,16 +151,20 @@ $student_gwa = $stmt->fetch(PDO::FETCH_ASSOC);
                         Dashboard
                     </a>
                     <a href="grades.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
-                        <i data-lucide="file-text" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        <i data-lucide="bar-chart-3" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         My Grades
                     </a>
                     <a href="applications.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="trophy" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Honor Applications
+                        Applications
                     </a>
                     <a href="rankings.php" class="bg-primary-50 border-r-2 border-primary-600 text-primary-700 group flex items-center px-2 py-2 text-sm font-medium rounded-l-xl">
-                        <i data-lucide="bar-chart-3" class="text-primary-500 mr-3 h-5 w-5"></i>
-                        My Rankings
+                        <i data-lucide="award" class="text-primary-500 mr-3 h-5 w-5"></i>
+                        Honor Rankings
+                    </a>
+                    <a href="profile.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Profile
                     </a>
                 </nav>
 
@@ -277,7 +279,7 @@ $student_gwa = $stmt->fetch(PDO::FETCH_ASSOC);
                                         <?php if ($ranking['year_level'] && $ranking['section']): ?>
                                             <div class="flex justify-between">
                                                 <span class="text-gray-500">Section:</span>
-                                                <span class="font-medium">Year <?php echo $ranking['year_level']; ?> - <?php echo htmlspecialchars($ranking['section']); ?></span>
+                                                <span class="font-medium"><?php echo $ranking['year_level'] . htmlspecialchars(formatSectionDisplay($ranking['section'])); ?></span>
                                             </div>
                                         <?php elseif ($ranking['year_level']): ?>
                                             <div class="flex justify-between">
@@ -345,7 +347,7 @@ $student_gwa = $stmt->fetch(PDO::FETCH_ASSOC);
                                                     <?php echo ucfirst(str_replace('_', ' ', $stat['ranking_type'])); ?>
                                                 </h4>
                                                 <span class="text-xs <?php echo $stat['ranking_type'] === 'deans_list' ? 'bg-blue-100 text-blue-800' : ($stat['ranking_type'] === 'presidents_list' ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'); ?> px-2 py-1 rounded-full">
-                                                    Year <?php echo $stat['year_level']; ?> - <?php echo htmlspecialchars($stat['section']); ?>
+                                                    <?php echo $stat['year_level'] . htmlspecialchars(formatSectionDisplay($stat['section'])); ?>
                                                 </span>
                                             </div>
                                             <div class="grid grid-cols-2 gap-2 text-xs">

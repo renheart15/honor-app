@@ -10,7 +10,10 @@
       "Bash(mysql:*)",
       "Bash(rm:*)",
       "Bash(mv:*)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(for file in \"C:\\laragon\\www\\honor-app\\student\\applications.php\" \"C:\\laragon\\www\\honor-app\\student\\grades.php\" \"C:\\laragon\\www\\honor-app\\student\\profile.php\" \"C:\\laragon\\www\\honor-app\\student\\rankings.php\" \"C:\\laragon\\www\\honor-app\\student\\upload-grades.php\")",
+      "Bash(do grep -n \"bg-primary-600 rounded-xl flex items-center justify-center\" \"$file\")",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []

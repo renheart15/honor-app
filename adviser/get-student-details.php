@@ -34,6 +34,35 @@ try {
     $adviser_stmt->execute();
     $adviser_info = $adviser_stmt->fetch(PDO::FETCH_ASSOC);
 
+    // Decode adviser section from JSON if needed
+    $adviser_section = $adviser_info['section'] ?? null;
+    if ($adviser_section) {
+        $sections_array = json_decode($adviser_section, true);
+        $adviser_section = is_array($sections_array) && !empty($sections_array) ? $sections_array[0] : $adviser_section;
+    }
+
+    // Build flexible section matching conditions
+    $section_conditions = [];
+    $section_params = [];
+    if ($adviser_section) {
+        // Try exact match and partial matches
+        $section_conditions[] = "u.section = ?";
+        $section_params[] = $adviser_section;
+
+        // If section is like "C-4", also try "C" and "4"
+        if (strpos($adviser_section, '-') !== false) {
+            $parts = explode('-', $adviser_section);
+            foreach ($parts as $part) {
+                $section_conditions[] = "u.section = ?";
+                $section_params[] = trim($part);
+            }
+        }
+
+        // Also try partial matches using LIKE
+        $section_conditions[] = "u.section LIKE ?";
+        $section_params[] = '%' . $adviser_section . '%';
+    }
+
     // Get comprehensive student information
     $student_query = "
         SELECT u.*, gwa.gwa, gwa.total_units, gwa.subjects_count, gwa.calculated_at,
@@ -45,26 +74,24 @@ try {
                (SELECT COUNT(*) FROM honor_applications ha WHERE ha.user_id = u.id AND ha.status = 'pending') as pending_applications
         FROM users u
         LEFT JOIN gwa_calculations gwa ON u.id = gwa.user_id
-        WHERE u.id = :student_id
+        WHERE u.id = ?
         AND u.role = 'student'
-        AND u.department = :department
+        AND u.department = ?
         AND u.status = 'active'
     ";
 
+    // Build query parameters
+    $params = [$student_id, $department];
+
     // If adviser has a specific section, only show students from that section
-    if ($adviser_info['section']) {
-        $student_query .= " AND u.section = :section";
+    if ($adviser_section && !empty($section_conditions)) {
+        $section_where = '(' . implode(' OR ', $section_conditions) . ')';
+        $student_query .= " AND $section_where";
+        $params = array_merge($params, $section_params);
     }
 
     $stmt = $db->prepare($student_query);
-    $stmt->bindParam(':student_id', $student_id);
-    $stmt->bindParam(':department', $department);
-
-    if ($adviser_info['section']) {
-        $stmt->bindParam(':section', $adviser_info['section']);
-    }
-
-    $stmt->execute();
+    $stmt->execute($params);
     $student = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$student) {
@@ -157,11 +184,11 @@ try {
                     </div>
                     <div class="flex justify-between">
                         <span class="text-sm text-gray-500">Department:</span>
-                        <span class="text-sm font-medium text-gray-900"><?php echo htmlspecialchars($student['department']); ?></span>
+                        <span class="text-sm font-medium text-gray-900"><?php echo htmlspecialchars(getDepartmentAbbreviation($student['department'])); ?></span>
                     </div>
                     <div class="flex justify-between">
                         <span class="text-sm text-gray-500">Section:</span>
-                        <span class="text-sm font-medium text-gray-900"><?php echo htmlspecialchars($student['section']); ?></span>
+                        <span class="text-sm font-medium text-gray-900"><?php echo htmlspecialchars(formatSectionDisplay($student['section'])); ?></span>
                     </div>
                     <div class="flex justify-between">
                         <span class="text-sm text-gray-500">Year Level:</span>
@@ -177,13 +204,6 @@ try {
                         <span class="text-sm text-gray-500">Joined:</span>
                         <span class="text-sm font-medium text-gray-900"><?php echo date('M j, Y', strtotime($student['created_at'])); ?></span>
                     </div>
-                </div>
-
-                <div class="mt-6 pt-6 border-t border-gray-200">
-                    <a href="mailto:<?php echo htmlspecialchars($student['email']); ?>" class="w-full bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center">
-                        <i data-lucide="mail" class="w-4 h-4 mr-2"></i>
-                        Send Email
-                    </a>
                 </div>
             </div>
         </div>

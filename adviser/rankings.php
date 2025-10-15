@@ -1,5 +1,6 @@
 <?php
 require_once '../config/config.php';
+require_once '../includes/application-periods.php';
 
 requireLogin();
 
@@ -14,14 +15,14 @@ $adviser_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
 
 // Get adviser's assigned section
-$query = "SELECT section, year_level FROM users WHERE id = :adviser_id";
-$stmt = $db->prepare($query);
-$stmt->bindParam(':adviser_id', $adviser_id);
-$stmt->execute();
-$adviser_info = $stmt->fetch(PDO::FETCH_ASSOC);
+$adviser_query = "SELECT section, year_level FROM users WHERE id = :adviser_id AND role = 'adviser'";
+$adviser_stmt = $db->prepare($adviser_query);
+$adviser_stmt->bindParam(':adviser_id', $adviser_id);
+$adviser_stmt->execute();
+$adviser_data = $adviser_stmt->fetch(PDO::FETCH_ASSOC);
 
-$adviser_section = $adviser_info['section'] ?? null;
-$adviser_year_level = $adviser_info['year_level'] ?? null;
+$adviser_section = $adviser_data['section'] ?? null;
+$adviser_year_level = $adviser_data['year_level'] ?? null;
 
 // Get current academic period
 $query = "SELECT * FROM academic_periods WHERE is_active = 1 LIMIT 1";
@@ -29,88 +30,170 @@ $stmt = $db->prepare($query);
 $stmt->execute();
 $active_period = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Get filters
-$filter_type = $_GET['type'] ?? 'all';
-
-$section_rankings = [];
-$department_stats = [];
-
-if ($active_period && $adviser_section) {
-    // Build query based on adviser assignment - only if section is assigned
-    $where_conditions = ["hr.department = :department", "hr.academic_period_id = :period_id"];
-    $params = [':department' => $department, ':period_id' => $active_period['id']];
-    
-    // Show only adviser's assigned section
-    $where_conditions[] = "hr.section = :section";
-    $params[':section'] = $adviser_section;
-    
-    if ($adviser_year_level) {
-        $where_conditions[] = "hr.year_level = :year_level";
-        $params[':year_level'] = $adviser_year_level;
-    }
-    
-    if ($filter_type !== 'all') {
-        $where_conditions[] = "hr.ranking_type = :ranking_type";
-        $params[':ranking_type'] = $filter_type;
-    }
-    
-    $where_clause = implode(' AND ', $where_conditions);
-
-    // Get rankings
-    $ranking_query = "
-        SELECT 
-            hr.*,
-            u.student_id,
-            u.first_name,
-            u.last_name,
-            u.year_level,
-            u.section,
-            ap.period_name,
-            ap.school_year,
-            ap.semester
-        FROM honor_rankings hr
-        JOIN users u ON hr.user_id = u.id
-        JOIN academic_periods ap ON hr.academic_period_id = ap.id
-        WHERE {$where_clause}
-        ORDER BY hr.ranking_type, u.year_level, u.section, hr.rank_position
-    ";
-    
-    $stmt = $db->prepare($ranking_query);
-    foreach ($params as $param => $value) {
-        $stmt->bindParam($param, $value);
-    }
-    $stmt->execute();
-    $section_rankings = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    // Get department ranking statistics - only for assigned section
-    $stats_query = "
-        SELECT 
-            ranking_type,
-            year_level,
-            section,
-            COUNT(*) as total_students,
-            MIN(gwa) as best_gwa,
-            MAX(gwa) as lowest_gwa,
-            AVG(gwa) as average_gwa
-        FROM honor_rankings hr
-        WHERE hr.department = :department AND hr.academic_period_id = :period_id AND hr.section = :section
-        AND hr.year_level IS NOT NULL
-        AND hr.section IS NOT NULL
-        GROUP BY ranking_type, year_level, section
-        ORDER BY ranking_type, year_level, section
-    ";
-    
-    $stmt = $db->prepare($stats_query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':period_id', $active_period['id']);
-    $stmt->bindParam(':section', $adviser_section);
-    $stmt->execute();
-    $department_stats = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} else {
-    // If no active period or no section assigned, show NO rankings
-    $section_rankings = [];
-    $department_stats = [];
+// Get application period information for this department
+$application_period = isApplicationPeriodOpen($db, $department);
+if (!$application_period) {
+    $next_application_period = getNextApplicationPeriod($db, $department);
 }
+
+// Get students in the department (department-wide for rankings view)
+$query = "SELECT u.*,
+                 (SELECT COUNT(*) FROM grade_submissions gs WHERE gs.user_id = u.id) as submission_count
+          FROM users u
+          WHERE u.role = 'student' AND u.department = :department AND u.status = 'active'
+          ORDER BY u.last_name, u.first_name";
+$stmt = $db->prepare($query);
+$stmt->bindParam(':department', $department);
+$stmt->execute();
+$students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Calculate period-specific GWA for each student and check for approved applications
+foreach ($students as &$student) {
+    if ($active_period) {
+        $semester_string = $active_period['semester'] . ' Semester SY ' . $active_period['school_year'];
+
+        // Calculate period-specific GWA
+        $gwa_query = "
+            SELECT
+                SUM(g.units * g.grade) as total_grade_points,
+                SUM(g.units) as total_units
+            FROM grades g
+            JOIN grade_submissions gs ON g.submission_id = gs.id
+            WHERE gs.user_id = :user_id
+            AND g.semester_taken = :semester_taken
+            AND g.grade > 0.00
+            AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
+        ";
+
+        $gwa_stmt = $db->prepare($gwa_query);
+        $gwa_stmt->bindParam(':user_id', $student['id']);
+        $gwa_stmt->bindParam(':semester_taken', $semester_string);
+        $gwa_stmt->execute();
+        $gwa_data = $gwa_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($gwa_data && $gwa_data['total_units'] > 0) {
+            $period_gwa = $gwa_data['total_grade_points'] / $gwa_data['total_units'];
+            $student['gwa'] = floor($period_gwa * 100) / 100;
+        } else {
+            $student['gwa'] = null;
+        }
+
+        // Check for approved Latin honors application
+        $latin_honors_query = "
+            SELECT COUNT(*) as has_approved_latin_honors
+            FROM honor_applications ha
+            WHERE ha.user_id = :user_id
+            AND ha.academic_period_id = :period_id
+            AND ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')
+            AND ha.status = 'final_approved'
+        ";
+
+        $latin_honors_stmt = $db->prepare($latin_honors_query);
+        $latin_honors_stmt->bindParam(':user_id', $student['id']);
+        $latin_honors_stmt->bindParam(':period_id', $active_period['id']);
+        $latin_honors_stmt->execute();
+        $latin_honors_data = $latin_honors_stmt->fetch(PDO::FETCH_ASSOC);
+
+        $student['has_approved_latin_honors'] = $latin_honors_data['has_approved_latin_honors'] > 0;
+    } else {
+        $student['gwa'] = null;
+        $student['has_approved_latin_honors'] = false;
+    }
+}
+unset($student);
+
+// Sort students by GWA (ascending, nulls last)
+usort($students, function($a, $b) {
+    if ($a['gwa'] === null && $b['gwa'] === null) return 0;
+    if ($a['gwa'] === null) return 1;
+    if ($b['gwa'] === null) return -1;
+    return $a['gwa'] <=> $b['gwa'];
+});
+
+// Filter students
+$search = $_GET['search'] ?? '';
+$year_filter = $_GET['year'] ?? 'all';
+$section_filter = $_GET['section'] ?? 'all';
+$ranking_type_filter = $_GET['ranking_type'] ?? 'all';
+$filter_period = $_GET['period'] ?? 'all';
+
+if ($year_filter !== 'all') {
+    $students = array_filter($students, function($student) use ($year_filter) {
+        return $student['year_level'] == $year_filter;
+    });
+}
+
+if ($section_filter !== 'all') {
+    $students = array_filter($students, function($student) use ($section_filter) {
+        return $student['section'] == $section_filter;
+    });
+}
+
+if ($ranking_type_filter !== 'all') {
+    $students = array_filter($students, function($student) use ($ranking_type_filter) {
+        if ($ranking_type_filter == 'deans_list') {
+            return $student['gwa'] !== null && $student['gwa'] <= 1.75;
+        } elseif ($ranking_type_filter == 'latin_honors') {
+            return $student['has_approved_latin_honors'];
+        }
+        return true;
+    });
+}
+
+if (!empty($search)) {
+    $students = array_filter($students, function($student) use ($search) {
+        return stripos($student['first_name'] . ' ' . $student['last_name'], $search) !== false ||
+               stripos($student['student_id'], $search) !== false;
+    });
+}
+
+// Convert to rankings format for display compatibility
+$rankings = [];
+foreach ($students as $student) {
+    if ($student['gwa'] !== null) {
+        $rankings[] = [
+            'first_name' => $student['first_name'],
+            'last_name' => $student['last_name'],
+            'student_id' => $student['student_id'],
+            'year_level' => $student['year_level'],
+            'section' => $student['section'],
+            'gwa' => $student['gwa'],
+            'has_approved_latin_honors' => $student['has_approved_latin_honors'],
+            'ranking_type' => ($student['has_approved_latin_honors']) ? 'latin_honors' : (($student['gwa'] <= 1.75) ? 'deans_list' : 'regular'),
+            'rank_position' => 0,
+            'total_students' => count($students),
+            'percentile' => 0
+        ];
+    }
+}
+
+// Add debug message after we have the data
+$debug_message = "Found " . count($students) . " total students, " . count($rankings) . " with GWA rankings. Using direct approach like chairperson.";
+
+// Get available year levels and sections for filters
+$year_query = "SELECT DISTINCT year_level FROM users WHERE department = :department AND role = 'student' ORDER BY year_level";
+$year_stmt = $db->prepare($year_query);
+$year_stmt->bindParam(':department', $department);
+$year_stmt->execute();
+$available_years = $year_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$section_query = "SELECT DISTINCT section FROM users WHERE department = :department AND role = 'student' AND section IS NOT NULL ORDER BY section";
+$section_stmt = $db->prepare($section_query);
+$section_stmt->bindParam(':department', $department);
+$section_stmt->execute();
+$available_sections = $section_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get academic periods that have ranking records for this department
+$periods_query = "SELECT DISTINCT ap.id, ap.period_name, ap.school_year, ap.semester, COUNT(hr.id) as ranking_count
+                  FROM academic_periods ap
+                  JOIN honor_rankings hr ON ap.id = hr.academic_period_id
+                  WHERE hr.department = :department
+                  GROUP BY ap.id, ap.period_name, ap.school_year, ap.semester
+                  ORDER BY ap.school_year DESC, ap.semester DESC";
+$periods_stmt = $db->prepare($periods_query);
+$periods_stmt->bindParam(':department', $department);
+$periods_stmt->execute();
+$available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
 <!DOCTYPE html>
@@ -118,7 +201,7 @@ if ($active_period && $adviser_section) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Section Rankings - CTU Honor System</title>
+    <title>Honor Rankings - CTU Honor System</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <script>
@@ -127,11 +210,11 @@ if ($active_period && $adviser_section) {
                 extend: {
                     colors: {
                         primary: {
-                            50: '#f0f9ff',
-                            100: '#e0f2fe',
-                            500: '#0ea5e9',
-                            600: '#0284c7',
-                            700: '#0369a1',
+                            50: '#f0fdf4',
+                            100: '#dcfce7',
+                            600: '#16a34a',
+                            700: '#15803d',
+                            800: '#166534',
                         }
                     }
                 }
@@ -145,17 +228,15 @@ if ($active_period && $adviser_section) {
         <div class="hidden md:flex md:w-64 md:flex-col">
             <div class="flex flex-col flex-grow bg-white border-r border-gray-200 pt-5 pb-4 overflow-y-auto">
                 <div class="flex items-center flex-shrink-0 px-4">
-                    <div class="w-8 h-8 bg-green-600 rounded-xl flex items-center justify-center">
-                        <i data-lucide="graduation-cap" class="w-5 h-5 text-white"></i>
-                    </div>
+                    <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-8 h-8">
                     <span class="ml-2 text-xl font-bold text-gray-900">CTU Honor</span>
                 </div>
-                
+
                 <!-- User Profile -->
                 <div class="mt-8 px-4">
                     <div class="flex items-center">
-                        <div class="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
-                            <i data-lucide="user-check" class="w-5 h-5 text-green-600"></i>
+                        <div class="w-10 h-10 bg-primary-100 rounded-xl flex items-center justify-center">
+                            <i data-lucide="user-check" class="w-5 h-5 text-primary-600"></i>
                         </div>
                         <div class="ml-3">
                             <p class="text-sm font-semibold text-gray-900"><?php echo $_SESSION['first_name'] . ' ' . $_SESSION['last_name']; ?></p>
@@ -182,12 +263,12 @@ if ($active_period && $adviser_section) {
                         <i data-lucide="users" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Students
                     </a>
-                    <a href="rankings.php" class="bg-green-50 border-r-2 border-green-600 text-green-700 group flex items-center px-2 py-2 text-sm font-medium rounded-l-xl">
-                        <i data-lucide="bar-chart-3" class="text-green-500 mr-3 h-5 w-5"></i>
-                        Section Rankings
+                    <a href="rankings.php" class="bg-primary-50 border-r-2 border-primary-600 text-primary-700 group flex items-center px-2 py-2 text-sm font-medium rounded-l-xl">
+                        <i data-lucide="award" class="text-primary-500 mr-3 h-5 w-5"></i>
+                        Honor Rankings
                     </a>
                     <a href="reports.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
-                        <i data-lucide="file-bar-chart" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        <i data-lucide="bar-chart-3" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
                 </nav>
@@ -212,38 +293,16 @@ if ($active_period && $adviser_section) {
                             <i data-lucide="menu" class="h-6 w-6"></i>
                         </button>
                         <div class="ml-4 md:ml-0">
-                            <h1 class="text-2xl font-bold text-gray-900">
-                                <?php if ($adviser_section): ?>
-                                    Section <?php echo htmlspecialchars($adviser_section); ?> Rankings
-                                <?php else: ?>
-                                    Department Rankings
-                                <?php endif; ?>
-                            </h1>
+                            <h1 class="text-2xl font-bold text-gray-900">Honor Rankings</h1>
                             <p class="text-sm text-gray-500">
+                                Honor rankings and achievements for <?php echo $department; ?> department
                                 <?php if ($active_period): ?>
-                                    <?php echo htmlspecialchars($active_period['period_name']); ?> - <?php echo htmlspecialchars($department); ?> Department
-                                    <?php if (!$adviser_section): ?>
-                                        <span class="inline-flex items-center ml-2 px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
-                                            <i data-lucide="alert-circle" class="w-3 h-3 mr-1"></i>
-                                            No Section Assigned
-                                        </span>
-                                    <?php endif; ?>
+                                    • <?php echo $active_period['semester']; ?> Semester SY <?php echo $active_period['school_year']; ?>
                                 <?php else: ?>
-                                    No active academic period
+                                    • No active period
                                 <?php endif; ?>
                             </p>
                         </div>
-                    </div>
-                    
-                    <div class="flex items-center space-x-4">
-                        <form method="GET" class="flex items-center space-x-2">
-                            <select name="type" onchange="this.form.submit()" class="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500 transition-colors">
-                                <option value="all" <?php echo $filter_type === 'all' ? 'selected' : ''; ?>>All Rankings</option>
-                                <option value="deans_list" <?php echo $filter_type === 'deans_list' ? 'selected' : ''; ?>>Dean's List</option>
-                                <option value="presidents_list" <?php echo $filter_type === 'presidents_list' ? 'selected' : ''; ?>>President's List</option>
-                                <option value="overall" <?php echo $filter_type === 'overall' ? 'selected' : ''; ?>>Overall</option>
-                            </select>
-                        </form>
                     </div>
                 </div>
             </header>
@@ -251,7 +310,6 @@ if ($active_period && $adviser_section) {
             <!-- Main Content Area -->
             <main class="flex-1 overflow-y-auto">
                 <div class="p-4 sm:p-6 lg:p-8">
-                    
                     <?php if (!$active_period): ?>
                         <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded-r-lg mb-6">
                             <div class="flex">
@@ -260,97 +318,116 @@ if ($active_period && $adviser_section) {
                                 </div>
                                 <div class="ml-3">
                                     <p class="text-sm text-yellow-700">
-                                        <strong>No Active Academic Period:</strong> Rankings are not available when there's no active academic period.
+                                        No active academic period found. Rankings cannot be displayed without an active period.
                                     </p>
-                                </div>
-                            </div>
-                        </div>
-                    <?php elseif (!$adviser_section): ?>
-                        <div class="mb-6 bg-amber-50 border-l-4 border-amber-400 p-4 rounded-r-lg">
-                            <div class="flex">
-                                <div class="ml-3">
-                                    <p class="text-sm font-medium text-amber-800">No Section Assigned</p>
-                                    <p class="mt-1 text-sm text-amber-700">You cannot view any honor rankings until the chairperson assigns you to a section. Contact your department chairperson for section assignment.</p>
                                 </div>
                             </div>
                         </div>
                     <?php endif; ?>
 
-                    <!-- Statistics Cards -->
-                    <?php if (!empty($department_stats)): ?>
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                            <?php
-                            $stats_summary = [];
-                            foreach ($department_stats as $stat) {
-                                if (!isset($stats_summary[$stat['ranking_type']])) {
-                                    $stats_summary[$stat['ranking_type']] = [
-                                        'total' => 0,
-                                        'best_gwa' => null,
-                                        'avg_gwa' => []
-                                    ];
-                                }
-                                $stats_summary[$stat['ranking_type']]['total'] += $stat['total_students'];
-                                if ($stats_summary[$stat['ranking_type']]['best_gwa'] === null || $stat['best_gwa'] < $stats_summary[$stat['ranking_type']]['best_gwa']) {
-                                    $stats_summary[$stat['ranking_type']]['best_gwa'] = $stat['best_gwa'];
-                                }
-                                $stats_summary[$stat['ranking_type']]['avg_gwa'][] = $stat['average_gwa'];
-                            }
-                            
-                            foreach ($stats_summary as $type => $summary):
-                                $avg_gwa = array_sum($summary['avg_gwa']) / count($summary['avg_gwa']);
-                            ?>
-                                <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
-                                    <div class="flex items-center">
-                                        <div class="flex-shrink-0">
-                                            <div class="w-8 h-8 <?php echo $type === 'deans_list' ? 'bg-blue-100 text-blue-600' : ($type === 'presidents_list' ? 'bg-purple-100 text-purple-600' : 'bg-green-100 text-green-600'); ?> rounded-xl flex items-center justify-center">
-                                                <i data-lucide="trophy" class="w-4 h-4"></i>
-                                            </div>
-                                        </div>
-                                        <div class="ml-5 w-0 flex-1">
-                                            <dl>
-                                                <dt class="text-sm font-medium text-gray-500 truncate">
-                                                    <?php echo ucfirst(str_replace('_', ' ', $type)); ?>
-                                                </dt>
-                                                <dd class="flex items-baseline">
-                                                    <div class="text-2xl font-semibold text-gray-900">
-                                                        <?php echo $summary['total']; ?>
-                                                    </div>
-                                                    <div class="ml-2 text-sm text-gray-500">
-                                                        students
-                                                    </div>
-                                                </dd>
-                                                <dd class="text-xs text-gray-500 mt-1">
-                                                    Best GWA: <?php echo number_format($summary['best_gwa'], 3); ?> | 
-                                                    Avg: <?php echo number_format($avg_gwa, 3); ?>
-                                                </dd>
-                                            </dl>
-                                        </div>
+                    <!-- Filters and Search -->
+                    <div class="mb-6">
+                        <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
+                            <header class="px-6 py-4 border-b border-gray-200">
+                                <div class="flex items-center justify-between">
+                                    <h3 class="text-lg font-semibold text-gray-900">Filters & Search</h3>
+                                    <div class="flex items-center space-x-3">
+                                        <input type="text" id="search" placeholder="Search students..." value="<?php echo htmlspecialchars($search); ?>"
+                                               class="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors w-64">
                                     </div>
                                 </div>
-                            <?php endforeach; ?>
+                            </header>
+                            <div class="p-6">
+                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4 mb-4">
+                                    <!-- Year Level Filter -->
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Year Level</label>
+                                        <select id="year_filter" onchange="applyFilters()"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                                            <option value="all" <?php echo $year_filter === 'all' ? 'selected' : ''; ?>>All Years</option>
+                                            <?php foreach ($available_years as $year): ?>
+                                                <option value="<?php echo $year['year_level']; ?>" <?php echo $year_filter == $year['year_level'] ? 'selected' : ''; ?>>
+                                                    Year <?php echo $year['year_level']; ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+
+                                    <!-- Section Filter -->
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Section</label>
+                                        <select id="section_filter" onchange="applyFilters()"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                                            <option value="all" <?php echo $section_filter === 'all' ? 'selected' : ''; ?>>All Sections</option>
+                                            <?php foreach ($available_sections as $section): ?>
+                                                <option value="<?php echo $section['section']; ?>" <?php echo $section_filter == $section['section'] ? 'selected' : ''; ?>>
+                                                    <?php echo htmlspecialchars(formatSectionDisplay($section['section'])); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+
+                                    <!-- Honor Type Filter -->
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Honor Type</label>
+                                        <select id="ranking_type_filter" onchange="applyFilters()"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                                            <option value="all" <?php echo $ranking_type_filter === 'all' ? 'selected' : ''; ?>>All Types</option>
+                                            <option value="deans_list" <?php echo $ranking_type_filter === 'deans_list' ? 'selected' : ''; ?>>Dean's List</option>
+                                            <option value="latin_honors" <?php echo $ranking_type_filter === 'latin_honors' ? 'selected' : ''; ?>>Latin Honors</option>
+                                        </select>
+                                    </div>
+
+                                    <!-- Period Filter -->
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Academic Period</label>
+                                        <select id="period_filter" onchange="applyFilters()"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                                            <option value="all" <?php echo $filter_period === 'all' ? 'selected' : ''; ?>>Current Period</option>
+                                            <?php foreach ($available_periods as $period): ?>
+                                                <option value="<?php echo $period['id']; ?>" <?php echo $filter_period == $period['id'] ? 'selected' : ''; ?>>
+                                                    <?php echo $period['semester']; ?> Sem SY <?php echo $period['school_year']; ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <!-- Clear Filters Button -->
+                                <div class="flex justify-center mt-6">
+                                    <button type="button" onclick="clearFilters()"
+                                            class="inline-flex items-center px-6 py-3 text-sm font-medium text-white bg-gradient-to-r from-red-500 to-red-600 border border-transparent rounded-xl hover:from-red-600 hover:to-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 shadow-sm hover:shadow-md transform hover:scale-105 transition-all duration-200">
+                                        <i data-lucide="filter-x" class="w-4 h-4 mr-2"></i>
+                                        Clear All Filters
+                                    </button>
+                                </div>
+                            </div>
                         </div>
-                    <?php endif; ?>
+                    </div>
 
                     <!-- Rankings Table -->
                     <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
                         <div class="px-6 py-4 border-b border-gray-200">
                             <h3 class="text-lg font-semibold text-gray-900">
-                                Honor Rankings 
-                                <span class="text-sm font-normal text-gray-500">(<?php echo count($section_rankings); ?> students)</span>
+                                Honor Rankings
+                                <span class="text-sm font-normal text-gray-500">(<?php echo count($rankings); ?> students)</span>
                             </h3>
+                            <?php if (isset($debug_message)): ?>
+                                <div class="text-xs text-gray-400 mt-2">
+                                    Debug: <?php echo htmlspecialchars($debug_message); ?>
+                                </div>
+                            <?php endif; ?>
                         </div>
                         <div class="overflow-x-auto">
-                            <?php if (empty($section_rankings)): ?>
+                            <?php if (empty($rankings)): ?>
                                 <div class="text-center py-12">
-                                    <i data-lucide="trophy" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
+                                    <i data-lucide="award" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
                                     <h4 class="text-xl font-medium text-gray-900 mb-2">No Rankings Found</h4>
                                     <p class="text-gray-500">
                                         <?php if (!$active_period): ?>
-                                            Set an active academic period to see honor roll students.
-                                        <?php elseif (!$adviser_section): ?>
-                                            No honor rankings available for the department yet. Rankings need to be generated by the chairperson.
+                                            Set an active academic period to see rankings.
                                         <?php else: ?>
-                                            No honor rankings available for section <?php echo htmlspecialchars($adviser_section); ?> yet. Rankings need to be generated by the chairperson.
+                                            Rankings are automatically generated from student grades.
                                         <?php endif; ?>
                                     </p>
                                 </div>
@@ -367,64 +444,67 @@ if ($active_period && $adviser_section) {
                                         </tr>
                                     </thead>
                                     <tbody class="bg-white divide-y divide-gray-200">
-                                        <?php 
-                                        $current_type = '';
-                                        $current_section = '';
-                                        foreach ($section_rankings as $ranking): 
-                                            $section_key = $ranking['year_level'] . '-' . $ranking['section'];
-                                            $type_section_key = $ranking['ranking_type'] . '-' . $section_key;
-                                            
-                                            // Add section header if needed
-                                            if ($current_type . $current_section !== $type_section_key):
-                                                $current_type = $ranking['ranking_type'];
-                                                $current_section = $section_key;
+                                        <?php
+                                        $rank = 1;
+                                        foreach ($rankings as $ranking):
+                                            $total_eligible = count($rankings);
+                                            $percentile = $total_eligible > 1 ? round(($total_eligible - $rank) * 100.0 / ($total_eligible - 1), 1) : 100.0;
                                         ?>
-                                                <tr class="bg-green-50">
-                                                    <td colspan="6" class="px-6 py-3 text-sm font-semibold text-green-800">
-                                                        <?php echo ucfirst(str_replace('_', ' ', $ranking['ranking_type'])); ?> - 
-                                                        Year <?php echo $ranking['year_level']; ?> Section <?php echo htmlspecialchars($ranking['section']); ?>
-                                                    </td>
-                                                </tr>
-                                        <?php endif; ?>
-                                        
-                                        <tr class="hover:bg-gray-50">
-                                            <td class="px-6 py-4 whitespace-nowrap">
-                                                <div class="flex items-center">
-                                                    <?php if ($ranking['rank_position'] <= 3): ?>
-                                                        <div class="w-8 h-8 <?php echo $ranking['rank_position'] == 1 ? 'bg-yellow-100 text-yellow-800' : ($ranking['rank_position'] == 2 ? 'bg-gray-100 text-gray-800' : 'bg-orange-100 text-orange-800'); ?> rounded-full flex items-center justify-center text-sm font-bold">
-                                                            <?php echo $ranking['rank_position']; ?>
+                                            <tr class="hover:bg-gray-50">
+                                                <td class="px-6 py-4 whitespace-nowrap">
+                                                    <div class="flex items-center">
+                                                        <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold <?php echo $rank <= 3 ? ($rank === 1 ? 'bg-yellow-100 text-yellow-800' : ($rank === 2 ? 'bg-gray-100 text-gray-800' : 'bg-orange-100 text-orange-800')) : 'bg-blue-100 text-blue-800'; ?>">
+                                                            #<?php echo $rank; ?>
                                                         </div>
+                                                    </div>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap">
+                                                    <div>
+                                                        <div class="text-sm font-medium text-gray-900">
+                                                            <?php echo htmlspecialchars($ranking['first_name'] . ' ' . $ranking['last_name']); ?>
+                                                        </div>
+                                                        <div class="text-sm text-gray-500">
+                                                            <?php echo htmlspecialchars($ranking['student_id']); ?>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap">
+                                                    <span class="text-sm text-gray-900"><?php echo $ranking['year_level'] . htmlspecialchars(formatSectionDisplay($ranking['section'])); ?></span>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap">
+                                                    <?php if ($ranking['gwa'] !== null): ?>
+                                                        <?php if (isset($ranking['has_approved_latin_honors']) && $ranking['has_approved_latin_honors']): ?>
+                                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                                                <i data-lucide="crown" class="w-3 h-3 mr-1"></i>
+                                                                Latin Honors
+                                                            </span>
+                                                        <?php elseif ($ranking['gwa'] <= 1.75): ?>
+                                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                                                <i data-lucide="star" class="w-3 h-3 mr-1"></i>
+                                                                Dean's List
+                                                            </span>
+                                                        <?php else: ?>
+                                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                                                                Regular
+                                                            </span>
+                                                        <?php endif; ?>
                                                     <?php else: ?>
-                                                        <span class="text-sm font-medium text-gray-900"><?php echo $ranking['rank_position']; ?></span>
+                                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                                                            No Status
+                                                        </span>
                                                     <?php endif; ?>
-                                                </div>
-                                            </td>
-                                            <td class="px-6 py-4 whitespace-nowrap">
-                                                <div>
-                                                    <div class="text-sm font-medium text-gray-900">
-                                                        <?php echo htmlspecialchars($ranking['first_name'] . ' ' . $ranking['last_name']); ?>
-                                                    </div>
-                                                    <div class="text-sm text-gray-500">
-                                                        <?php echo htmlspecialchars($ranking['student_id']); ?>
-                                                    </div>
-                                                </div>
-                                            </td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                                Year <?php echo $ranking['year_level']; ?> - <?php echo htmlspecialchars($ranking['section']); ?>
-                                            </td>
-                                            <td class="px-6 py-4 whitespace-nowrap">
-                                                <span class="inline-flex px-2 py-1 text-xs font-medium rounded-full <?php echo $ranking['ranking_type'] === 'deans_list' ? 'bg-blue-100 text-blue-800' : ($ranking['ranking_type'] === 'presidents_list' ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'); ?>">
-                                                    <?php echo ucfirst(str_replace('_', ' ', $ranking['ranking_type'])); ?>
-                                                </span>
-                                            </td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                                <?php echo number_format($ranking['gwa'], 3); ?>
-                                            </td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                                <?php echo $ranking['percentile'] ? number_format($ranking['percentile'], 1) . '%' : 'N/A'; ?>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                                    <?php echo number_format($ranking['gwa'], 2); ?>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                    <?php echo number_format($percentile, 1); ?>%
+                                                </td>
+                                            </tr>
+                                        <?php
+                                            $rank++;
+                                        endforeach;
+                                        ?>
                                     </tbody>
                                 </table>
                             <?php endif; ?>
@@ -436,7 +516,72 @@ if ($active_period && $adviser_section) {
     </div>
 
     <script>
+        // Initialize Lucide icons
         lucide.createIcons();
+
+        // Apply all filters
+        function applyFilters() {
+            const url = new URL(window.location);
+
+            // Get all filter values
+            const year_filter = document.getElementById('year_filter').value;
+            const section_filter = document.getElementById('section_filter').value;
+            const ranking_type_filter = document.getElementById('ranking_type_filter').value;
+            const period_filter = document.getElementById('period_filter').value;
+            const search = document.getElementById('search').value;
+
+            // Set or remove parameters
+            if (year_filter !== 'all') {
+                url.searchParams.set('year', year_filter);
+            } else {
+                url.searchParams.delete('year');
+            }
+
+            if (section_filter !== 'all') {
+                url.searchParams.set('section', section_filter);
+            } else {
+                url.searchParams.delete('section');
+            }
+
+            if (ranking_type_filter !== 'all') {
+                url.searchParams.set('ranking_type', ranking_type_filter);
+            } else {
+                url.searchParams.delete('ranking_type');
+            }
+
+            if (period_filter !== 'all') {
+                url.searchParams.set('period', period_filter);
+            } else {
+                url.searchParams.delete('period');
+            }
+
+            if (search) {
+                url.searchParams.set('search', search);
+            } else {
+                url.searchParams.delete('search');
+            }
+
+            window.location.href = url.toString();
+        }
+
+        // Clear all filters
+        function clearFilters() {
+            const url = new URL(window.location);
+            url.searchParams.delete('year');
+            url.searchParams.delete('section');
+            url.searchParams.delete('ranking_type');
+            url.searchParams.delete('period');
+            url.searchParams.delete('search');
+            window.location.href = url.toString();
+        }
+
+        // Search functionality with debounce
+        document.getElementById('search').addEventListener('input', function(e) {
+            clearTimeout(this.searchTimeout);
+            this.searchTimeout = setTimeout(() => {
+                applyFilters();
+            }, 500);
+        });
     </script>
 </body>
 </html>

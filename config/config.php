@@ -67,6 +67,55 @@ function formatGWA($gwa) {
     return number_format($truncated, 2);
 }
 
+function formatSectionDisplay($section) {
+    // Convert C-4 format to 4C format
+    if (preg_match('/^([A-Z])-(\d+)$/', $section, $matches)) {
+        return $matches[2] . $matches[1];
+    }
+    return $section;
+}
+
+function getDepartmentAbbreviation($department) {
+    // Convert full department names to abbreviations
+    $abbreviations = [
+        // College of Agriculture
+        'Bachelor of Science in Agriculture' => 'BS Agri',
+
+        // College of Arts and Sciences
+        'Bachelor of Arts in English Language' => 'AB English',
+        'Bachelor of Arts in Literature' => 'AB Lit',
+
+        // College of Education
+        'Bachelor of Elementary Education' => 'BEEd',
+        'Bachelor of Secondary Education' => 'BSEd',
+
+        // College of Engineering
+        'Bachelor of Science in Civil Engineering' => 'BSCE',
+        'Bachelor of Science in Electrical Engineering' => 'BSEE',
+        'Bachelor of Science in Industrial Engineering' => 'BSIE',
+        'Bachelor of Science in Mechanical Engineering' => 'BSME',
+
+        // College of Technology
+        'Bachelor of Industrial Technology' => 'BIT',
+        'Bachelor of Science in Information Technology' => 'BSIT',
+        'Bachelor of Science in Hospitality Management' => 'BSHM',
+
+        // Other common programs
+        'Bachelor of Science in Computer Science' => 'BSCS',
+        'Bachelor of Science in Information Systems' => 'BSIS',
+        'Bachelor of Science in Computer Engineering' => 'BSCpE',
+        'Bachelor of Science in Electronics Engineering' => 'BSECE',
+        'Bachelor of Science in Architecture' => 'BS Arch',
+        'Bachelor of Science in Business Administration' => 'BSBA',
+        'Bachelor of Science in Accountancy' => 'BSA',
+        'Bachelor of Science in Tourism Management' => 'BSTM',
+        'Bachelor of Science in Nursing' => 'BSN',
+        'Bachelor of Science in Psychology' => 'BS Psych',
+    ];
+
+    return $abbreviations[$department] ?? $department;
+}
+
 function getStatusBadge($status) {
     $badges = [
         'submitted' => 'primary',
