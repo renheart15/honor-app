@@ -68,11 +68,21 @@ function formatGWA($gwa) {
 }
 
 function formatSectionDisplay($section) {
+    if (!$section) return 'N/A';
+
+    // Handle different section formats
     // Convert C-4 format to 4C format
     if (preg_match('/^([A-Z])-(\d+)$/', $section, $matches)) {
         return $matches[2] . $matches[1];
     }
-    return $section;
+
+    // Handle formats like "bsit-3a" -> "BSIT-3A"
+    $parts = explode('-', $section);
+    if (count($parts) === 2) {
+        return strtoupper($parts[0]) . '-' . strtoupper($parts[1]);
+    }
+
+    return strtoupper($section);
 }
 
 function getDepartmentAbbreviation($department) {

@@ -114,8 +114,8 @@
                 $errors['year_level'] = 'Please select a valid year level (1-4)';
             }
 
-            if (!empty($data['section']) && !preg_match('/^[A-Z]$/', $data['section'])) {
-                $errors['section'] = 'Section must be a single letter (A, B, C, etc.)';
+            if (!empty($data['section']) && !preg_match('/^[A-Z0-9\s-]{1,10}$/', strtoupper($data['section']))) {
+                $errors['section'] = 'Section can only contain letters, numbers, spaces, or hyphens (e.g., TAB, A1, B-2)';
             }
         }
 
@@ -370,15 +370,15 @@
                             </div>
                             <div>
                                 <label for="section" class="block text-sm font-semibold text-gray-700 mb-2">Section</label>
-                                <input type="text" id="section" name="section" maxlength="1" pattern="[A-Z]"
+                                <input type="text" id="section" name="section" maxlength="10" pattern="[A-Za-z0-9\s-]{1,10}"
                                     class="block w-full px-3 py-3 border <?php echo isset($errors['section']) ? 'border-red-300 bg-red-50' : 'border-gray-300'; ?> rounded-xl focus:ring-2 focus:ring-ctu-500 focus:border-ctu-500 transition-colors uppercase text-center"
                                     placeholder="A"
-                                    style="max-width: 80px;"
+                                    style="max-width: 120px;"
                                     value="<?php echo htmlspecialchars($_POST['section'] ?? ''); ?>">
                                 <?php if (isset($errors['section'])): ?>
                                     <p class="mt-1 text-sm text-red-600"><?php echo htmlspecialchars($errors['section']); ?></p>
                                 <?php endif; ?>
-                                <p class="mt-1 text-sm text-gray-500">Enter a single letter (A, B, C, etc.)</p>
+                                <p class="mt-1 text-sm text-gray-500">Enter a letter (TAB, A, B, C, etc.)</p>
                             </div>
                         </div>
                     </div>
@@ -668,7 +668,7 @@
                 if (sectionInput) {
                     sectionInput.addEventListener('input', function() {
                         // Convert to uppercase and limit to single letter
-                        let value = this.value.toUpperCase().replace(/[^A-Z]/g, '').substring(0, 1);
+                        let value = this.value.toUpperCase().replace(/[^A-Z]/g, '').substring(0, 3);
                         this.value = value;
                     });
                 }

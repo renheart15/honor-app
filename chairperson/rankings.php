@@ -308,7 +308,7 @@ if ($selected_period_id) {
                 </a>
                 <a href="rankings.php" class="bg-purple-50 border-r-2 border-purple-600 text-purple-700 group flex items-center px-2 py-2 text-sm font-medium rounded-l-xl">
                     <i data-lucide="trophy" class="text-purple-500 mr-3 h-5 w-5"></i>
-                    Honor Rankings
+                    Rankings
                 </a>
                 <a href="advisers.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                     <i data-lucide="user-check" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>

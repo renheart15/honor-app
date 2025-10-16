@@ -3,6 +3,9 @@
     "description": "CTU Honor Application System - Academic GWA computation and Dean's List application system",
     "license": "proprietary",
     "require": {
-        "smalot/pdfparser": "^2.12"
+        "smalot/pdfparser": "^2.12",
+        "phpoffice/phpword": "^1.0",
+        "dompdf/dompdf": "^3.1",
+        "mpdf/mpdf": "^8.2"
     }
 }

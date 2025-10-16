@@ -175,10 +175,6 @@ if (!empty($search)) {
                         <i data-lucide="award" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Honor Rankings
                     </a>
-                    <a href="reports.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
-                        <i data-lucide="bar-chart-3" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Reports
-                    </a>
                 </nav>
 
                 <!-- Logout -->

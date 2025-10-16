@@ -1,5 +1,6 @@
 <?php
 require_once '../config/config.php';
+require_once '../includes/application-periods.php';
 
 requireLogin();
 
@@ -13,86 +14,187 @@ $db = $database->getConnection();
 $student_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
 
+// Get current student info
+$student_query = "SELECT year_level, section FROM users WHERE id = :student_id";
+$student_stmt = $db->prepare($student_query);
+$student_stmt->bindParam(':student_id', $student_id);
+$student_stmt->execute();
+$current_student = $student_stmt->fetch(PDO::FETCH_ASSOC);
+
+$student_year_level = $current_student['year_level'] ?? null;
+$student_section = $current_student['section'] ?? null;
+
 // Get current academic period
 $query = "SELECT * FROM academic_periods WHERE is_active = 1 LIMIT 1";
 $stmt = $db->prepare($query);
 $stmt->execute();
 $active_period = $stmt->fetch(PDO::FETCH_ASSOC);
 
-$student_rankings = [];
-$department_stats = [];
-
-if ($active_period) {
-    // Get student's rankings
-    $ranking_query = "
-        SELECT 
-            hr.*,
-            u.student_id,
-            u.first_name,
-            u.last_name,
-            u.year_level,
-            u.section,
-            ap.period_name,
-            ap.school_year,
-            ap.semester
-        FROM honor_rankings hr
-        JOIN users u ON hr.user_id = u.id
-        JOIN academic_periods ap ON hr.academic_period_id = ap.id
-        WHERE hr.user_id = :student_id
-        AND hr.academic_period_id = :period_id
-        ORDER BY hr.ranking_type, hr.year_level, hr.section
-    ";
-    
-    $stmt = $db->prepare($ranking_query);
-    $stmt->bindParam(':student_id', $student_id);
-    $stmt->bindParam(':period_id', $active_period['id']);
-    $stmt->execute();
-    $student_rankings = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    // Get department ranking statistics
-    $stats_query = "
-        SELECT 
-            ranking_type,
-            year_level,
-            section,
-            COUNT(*) as total_students,
-            MIN(gwa) as best_gwa,
-            MAX(gwa) as lowest_gwa,
-            AVG(gwa) as average_gwa
-        FROM honor_rankings hr
-        WHERE hr.department = :department
-        AND hr.academic_period_id = :period_id
-        AND hr.year_level IS NOT NULL
-        AND hr.section IS NOT NULL
-        GROUP BY ranking_type, year_level, section
-        ORDER BY ranking_type, year_level, section
-    ";
-    
-    $stmt = $db->prepare($stats_query);
-    $stmt->bindParam(':department', $department);
-    $stmt->bindParam(':period_id', $active_period['id']);
-    $stmt->execute();
-    $department_stats = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Get application period information for this department
+$application_period = isApplicationPeriodOpen($db, $department);
+if (!$application_period) {
+    $next_application_period = getNextApplicationPeriod($db, $department);
 }
 
-// Get student's GWA information
-$gwa_query = "
-    SELECT 
-        gwa.*,
-        ap.period_name,
-        ap.school_year,
-        ap.semester
-    FROM gwa_calculations gwa
-    JOIN academic_periods ap ON gwa.academic_period_id = ap.id
-    WHERE gwa.user_id = :student_id
-    ORDER BY gwa.calculated_at DESC
-    LIMIT 1
-";
-
-$stmt = $db->prepare($gwa_query);
-$stmt->bindParam(':student_id', $student_id);
+// Get students in the department (department-wide for rankings view)
+$query = "SELECT u.*,
+                 (SELECT COUNT(*) FROM grade_submissions gs WHERE gs.user_id = u.id) as submission_count
+          FROM users u
+          WHERE u.role = 'student' AND u.department = :department AND u.status = 'active'
+          ORDER BY u.last_name, u.first_name";
+$stmt = $db->prepare($query);
+$stmt->bindParam(':department', $department);
 $stmt->execute();
-$student_gwa = $stmt->fetch(PDO::FETCH_ASSOC);
+$students = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Calculate period-specific GWA for each student and check for approved applications
+foreach ($students as &$student) {
+    if ($active_period) {
+        $semester_string = $active_period['semester'] . ' Semester SY ' . $active_period['school_year'];
+
+        // Calculate period-specific GWA
+        $gwa_query = "
+            SELECT
+                SUM(g.units * g.grade) as total_grade_points,
+                SUM(g.units) as total_units
+            FROM grades g
+            JOIN grade_submissions gs ON g.submission_id = gs.id
+            WHERE gs.user_id = :user_id
+            AND g.semester_taken = :semester_taken
+            AND g.grade > 0.00
+            AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
+        ";
+
+        $gwa_stmt = $db->prepare($gwa_query);
+        $gwa_stmt->bindParam(':user_id', $student['id']);
+        $gwa_stmt->bindParam(':semester_taken', $semester_string);
+        $gwa_stmt->execute();
+        $gwa_data = $gwa_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($gwa_data && $gwa_data['total_units'] > 0) {
+            $period_gwa = $gwa_data['total_grade_points'] / $gwa_data['total_units'];
+            $student['gwa'] = floor($period_gwa * 100) / 100;
+        } else {
+            $student['gwa'] = null;
+        }
+
+        // Check for approved Latin honors application
+        $latin_honors_query = "
+            SELECT COUNT(*) as has_approved_latin_honors
+            FROM honor_applications ha
+            WHERE ha.user_id = :user_id
+            AND ha.academic_period_id = :period_id
+            AND ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')
+            AND ha.status = 'final_approved'
+        ";
+
+        $latin_honors_stmt = $db->prepare($latin_honors_query);
+        $latin_honors_stmt->bindParam(':user_id', $student['id']);
+        $latin_honors_stmt->bindParam(':period_id', $active_period['id']);
+        $latin_honors_stmt->execute();
+        $latin_honors_data = $latin_honors_stmt->fetch(PDO::FETCH_ASSOC);
+
+        $student['has_approved_latin_honors'] = $latin_honors_data['has_approved_latin_honors'] > 0;
+    } else {
+        $student['gwa'] = null;
+        $student['has_approved_latin_honors'] = false;
+    }
+}
+unset($student);
+
+// Sort students by GWA (ascending, nulls last)
+usort($students, function($a, $b) {
+    if ($a['gwa'] === null && $b['gwa'] === null) return 0;
+    if ($a['gwa'] === null) return 1;
+    if ($b['gwa'] === null) return -1;
+    return $a['gwa'] <=> $b['gwa'];
+});
+
+// Filter students
+$search = $_GET['search'] ?? '';
+$year_filter = $_GET['year'] ?? 'all';
+$section_filter = $_GET['section'] ?? 'all';
+$ranking_type_filter = $_GET['ranking_type'] ?? 'all';
+$filter_period = $_GET['period'] ?? 'all';
+
+if ($year_filter !== 'all') {
+    $students = array_filter($students, function($student) use ($year_filter) {
+        return $student['year_level'] == $year_filter;
+    });
+}
+
+if ($section_filter !== 'all') {
+    $students = array_filter($students, function($student) use ($section_filter) {
+        return $student['section'] == $section_filter;
+    });
+}
+
+if ($ranking_type_filter !== 'all') {
+    $students = array_filter($students, function($student) use ($ranking_type_filter) {
+        if ($ranking_type_filter == 'deans_list') {
+            return $student['gwa'] !== null && $student['gwa'] <= 1.75;
+        } elseif ($ranking_type_filter == 'latin_honors') {
+            return $student['has_approved_latin_honors'];
+        }
+        return true;
+    });
+}
+
+if (!empty($search)) {
+    $students = array_filter($students, function($student) use ($search) {
+        return stripos($student['first_name'] . ' ' . $student['last_name'], $search) !== false ||
+               stripos($student['student_id'], $search) !== false;
+    });
+}
+
+// Convert to rankings format for display compatibility
+$rankings = [];
+foreach ($students as $student) {
+    if ($student['gwa'] !== null) {
+        $rankings[] = [
+            'user_id' => $student['id'],
+            'first_name' => $student['first_name'],
+            'last_name' => $student['last_name'],
+            'student_id' => $student['student_id'],
+            'year_level' => $student['year_level'],
+            'section' => $student['section'],
+            'gwa' => $student['gwa'],
+            'has_approved_latin_honors' => $student['has_approved_latin_honors'],
+            'ranking_type' => ($student['has_approved_latin_honors']) ? 'latin_honors' : (($student['gwa'] <= 1.75) ? 'deans_list' : 'regular'),
+            'rank_position' => 0,
+            'total_students' => count($students),
+            'percentile' => 0
+        ];
+    }
+}
+
+// Add debug message after we have the data
+$debug_message = "Found " . count($students) . " total students, " . count($rankings) . " with GWA rankings.";
+
+// Get available year levels and sections for filters
+$year_query = "SELECT DISTINCT year_level FROM users WHERE department = :department AND role = 'student' ORDER BY year_level";
+$year_stmt = $db->prepare($year_query);
+$year_stmt->bindParam(':department', $department);
+$year_stmt->execute();
+$available_years = $year_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$section_query = "SELECT DISTINCT section FROM users WHERE department = :department AND role = 'student' AND section IS NOT NULL ORDER BY section";
+$section_stmt = $db->prepare($section_query);
+$section_stmt->bindParam(':department', $department);
+$section_stmt->execute();
+$available_sections = $section_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Get academic periods that have ranking records for this department
+$periods_query = "SELECT DISTINCT ap.id, ap.period_name, ap.school_year, ap.semester, COUNT(hr.id) as ranking_count
+                  FROM academic_periods ap
+                  JOIN honor_rankings hr ON ap.id = hr.academic_period_id
+                  WHERE hr.department = :department
+                  GROUP BY ap.id, ap.period_name, ap.school_year, ap.semester
+                  ORDER BY ap.school_year DESC, ap.semester DESC";
+$periods_stmt = $db->prepare($periods_query);
+$periods_stmt->bindParam(':department', $department);
+$periods_stmt->execute();
+$available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 
 <!DOCTYPE html>
@@ -188,12 +290,13 @@ $student_gwa = $stmt->fetch(PDO::FETCH_ASSOC);
                             <i data-lucide="menu" class="h-6 w-6"></i>
                         </button>
                         <div class="ml-4 md:ml-0">
-                            <h1 class="text-2xl font-bold text-gray-900">My Rankings</h1>
+                            <h1 class="text-2xl font-bold text-gray-900">Honor Rankings</h1>
                             <p class="text-sm text-gray-500">
+                                Honor rankings and achievements for <?php echo $department; ?> department
                                 <?php if ($active_period): ?>
-                                    <?php echo htmlspecialchars($active_period['period_name']); ?>
+                                    • <?php echo $active_period['semester']; ?> Semester SY <?php echo $active_period['school_year']; ?>
                                 <?php else: ?>
-                                    No active academic period
+                                    • No active period
                                 <?php endif; ?>
                             </p>
                         </div>
@@ -204,7 +307,6 @@ $student_gwa = $stmt->fetch(PDO::FETCH_ASSOC);
             <!-- Main Content Area -->
             <main class="flex-1 overflow-y-auto">
                 <div class="p-4 sm:p-6 lg:p-8">
-                    
                     <?php if (!$active_period): ?>
                         <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded-r-lg mb-6">
                             <div class="flex">
@@ -213,174 +315,274 @@ $student_gwa = $stmt->fetch(PDO::FETCH_ASSOC);
                                 </div>
                                 <div class="ml-3">
                                     <p class="text-sm text-yellow-700">
-                                        <strong>No Active Academic Period:</strong> Rankings are not available when there's no active academic period.
+                                        No active academic period found. Rankings cannot be displayed without an active period.
                                     </p>
                                 </div>
                             </div>
                         </div>
                     <?php endif; ?>
 
-                    <!-- Current GWA Card -->
-                    <?php if ($student_gwa): ?>
-                        <div class="bg-gradient-to-r from-primary-500 to-primary-600 rounded-2xl p-6 text-white mb-8">
-                            <div class="flex items-center justify-between">
-                                <div>
-                                    <h2 class="text-lg font-semibold mb-2">Current Academic Performance</h2>
-                                    <div class="flex items-baseline">
-                                        <span class="text-4xl font-bold"><?php echo number_format($student_gwa['gwa'], 3); ?></span>
-                                        <span class="ml-2 text-primary-100">GWA</span>
-                                    </div>
-                                    <div class="mt-2 grid grid-cols-3 gap-4 text-sm">
-                                        <div>
-                                            <div class="text-primary-100">Total Units</div>
-                                            <div class="font-medium"><?php echo $student_gwa['total_units']; ?></div>
-                                        </div>
-                                        <div>
-                                            <div class="text-primary-100">Subjects</div>
-                                            <div class="font-medium"><?php echo $student_gwa['subjects_count']; ?></div>
-                                        </div>
-                                        <div>
-                                            <div class="text-primary-100">Failed</div>
-                                            <div class="font-medium"><?php echo $student_gwa['failed_subjects']; ?></div>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="text-right">
-                                    <div class="w-16 h-16 bg-white bg-opacity-20 rounded-xl flex items-center justify-center">
-                                        <i data-lucide="trophy" class="w-8 h-8 text-white"></i>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    <?php endif; ?>
-
-                    <!-- Student Rankings -->
-                    <?php if (!empty($student_rankings)): ?>
-                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-                            <?php foreach ($student_rankings as $ranking): ?>
-                                <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
-                                    <div class="flex items-center justify-between mb-4">
-                                        <div class="flex items-center">
-                                            <div class="w-10 h-10 <?php echo $ranking['ranking_type'] === 'deans_list' ? 'bg-blue-100 text-blue-600' : ($ranking['ranking_type'] === 'presidents_list' ? 'bg-purple-100 text-purple-600' : 'bg-green-100 text-green-600'); ?> rounded-xl flex items-center justify-center">
-                                                <i data-lucide="award" class="w-5 h-5"></i>
-                                            </div>
-                                        </div>
-                                        <div class="text-right">
-                                            <div class="text-2xl font-bold text-gray-900">#<?php echo $ranking['rank_position']; ?></div>
-                                            <div class="text-xs text-gray-500">of <?php echo $ranking['total_students']; ?></div>
-                                        </div>
-                                    </div>
-                                    
-                                    <h3 class="text-lg font-semibold text-gray-900 mb-2">
-                                        <?php echo ucfirst(str_replace('_', ' ', $ranking['ranking_type'])); ?>
-                                    </h3>
-                                    
-                                    <div class="space-y-2 text-sm">
-                                        <?php if ($ranking['year_level'] && $ranking['section']): ?>
-                                            <div class="flex justify-between">
-                                                <span class="text-gray-500">Section:</span>
-                                                <span class="font-medium"><?php echo $ranking['year_level'] . htmlspecialchars(formatSectionDisplay($ranking['section'])); ?></span>
-                                            </div>
-                                        <?php elseif ($ranking['year_level']): ?>
-                                            <div class="flex justify-between">
-                                                <span class="text-gray-500">Scope:</span>
-                                                <span class="font-medium">Year <?php echo $ranking['year_level']; ?> Department-wide</span>
-                                            </div>
-                                        <?php else: ?>
-                                            <div class="flex justify-between">
-                                                <span class="text-gray-500">Scope:</span>
-                                                <span class="font-medium">Department-wide</span>
-                                            </div>
-                                        <?php endif; ?>
-                                        
-                                        <div class="flex justify-between">
-                                            <span class="text-gray-500">GWA:</span>
-                                            <span class="font-bold text-primary-600"><?php echo number_format($ranking['gwa'], 3); ?></span>
-                                        </div>
-                                        
-                                        <?php if ($ranking['percentile']): ?>
-                                            <div class="flex justify-between">
-                                                <span class="text-gray-500">Percentile:</span>
-                                                <span class="font-medium"><?php echo number_format($ranking['percentile'], 1); ?>%</span>
-                                            </div>
-                                        <?php endif; ?>
-                                    </div>
-                                    
-                                    <div class="mt-4 pt-4 border-t border-gray-100">
-                                        <div class="flex items-center text-xs text-gray-500">
-                                            <i data-lucide="calendar" class="w-3 h-3 mr-1"></i>
-                                            <?php echo date('M d, Y', strtotime($ranking['generated_at'])); ?>
-                                        </div>
-                                    </div>
-                                </div>
-                            <?php endforeach; ?>
-                        </div>
-                    <?php elseif ($active_period): ?>
-                        <div class="bg-white rounded-2xl p-12 text-center shadow-sm border border-gray-200 mb-8">
-                            <i data-lucide="trophy" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
-                            <h3 class="text-xl font-medium text-gray-900 mb-2">No Rankings Available</h3>
-                            <p class="text-gray-500 mb-4">
-                                You don't have any honor rankings for the current academic period. Rankings are generated based on your GWA performance.
-                            </p>
-                            <div class="text-sm text-gray-400">
-                                Rankings criteria:
-                                <ul class="mt-2 space-y-1">
-                                    <li>• Dean's List: GWA ≤ 1.75, no grade above 2.5, no failed subjects</li>
-                                    <li>• President's List: GWA ≤ 1.25, no grade above 2.5, no failed subjects</li>
-                                </ul>
-                            </div>
-                        </div>
-                    <?php endif; ?>
-
-                    <!-- Department Statistics -->
-                    <?php if (!empty($department_stats)): ?>
+                    <!-- Filters and Search -->
+                    <div class="mb-6">
                         <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
-                            <div class="px-6 py-4 border-b border-gray-200">
-                                <h3 class="text-lg font-semibold text-gray-900"><?php echo htmlspecialchars($department); ?> Department Rankings Overview</h3>
-                            </div>
+                            <header class="px-6 py-4 border-b border-gray-200">
+                                <div class="flex items-center justify-between">
+                                    <h3 class="text-lg font-semibold text-gray-900">Filters & Search</h3>
+                                    <div class="flex items-center space-x-3">
+                                        <input type="text" id="search" placeholder="Search students..." value="<?php echo htmlspecialchars($search); ?>"
+                                               class="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors w-64">
+                                    </div>
+                                </div>
+                            </header>
                             <div class="p-6">
-                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                                    <?php foreach ($department_stats as $stat): ?>
-                                        <div class="bg-gray-50 rounded-xl p-4">
-                                            <div class="flex items-center justify-between mb-2">
-                                                <h4 class="text-sm font-semibold text-gray-900">
-                                                    <?php echo ucfirst(str_replace('_', ' ', $stat['ranking_type'])); ?>
-                                                </h4>
-                                                <span class="text-xs <?php echo $stat['ranking_type'] === 'deans_list' ? 'bg-blue-100 text-blue-800' : ($stat['ranking_type'] === 'presidents_list' ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'); ?> px-2 py-1 rounded-full">
-                                                    <?php echo $stat['year_level'] . htmlspecialchars(formatSectionDisplay($stat['section'])); ?>
-                                                </span>
-                                            </div>
-                                            <div class="grid grid-cols-2 gap-2 text-xs">
-                                                <div>
-                                                    <div class="text-gray-500">Total Students</div>
-                                                    <div class="font-medium"><?php echo $stat['total_students']; ?></div>
-                                                </div>
-                                                <div>
-                                                    <div class="text-gray-500">Best GWA</div>
-                                                    <div class="font-medium"><?php echo number_format($stat['best_gwa'], 3); ?></div>
-                                                </div>
-                                                <div>
-                                                    <div class="text-gray-500">Average GWA</div>
-                                                    <div class="font-medium"><?php echo number_format($stat['average_gwa'], 3); ?></div>
-                                                </div>
-                                                <div>
-                                                    <div class="text-gray-500">Lowest GWA</div>
-                                                    <div class="font-medium"><?php echo number_format($stat['lowest_gwa'], 3); ?></div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    <?php endforeach; ?>
+                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4 mb-4">
+                                    <!-- Year Level Filter -->
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Year Level</label>
+                                        <select id="year_filter" onchange="applyFilters()"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                                            <option value="all" <?php echo $year_filter === 'all' ? 'selected' : ''; ?>>All Years</option>
+                                            <?php foreach ($available_years as $year): ?>
+                                                <option value="<?php echo $year['year_level']; ?>" <?php echo $year_filter == $year['year_level'] ? 'selected' : ''; ?>>
+                                                    Year <?php echo $year['year_level']; ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+
+                                    <!-- Section Filter -->
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Section</label>
+                                        <select id="section_filter" onchange="applyFilters()"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                                            <option value="all" <?php echo $section_filter === 'all' ? 'selected' : ''; ?>>All Sections</option>
+                                            <?php foreach ($available_sections as $section): ?>
+                                                <option value="<?php echo $section['section']; ?>" <?php echo $section_filter == $section['section'] ? 'selected' : ''; ?>>
+                                                    <?php echo htmlspecialchars(formatSectionDisplay($section['section'])); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+
+                                    <!-- Honor Type Filter -->
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Honor Type</label>
+                                        <select id="ranking_type_filter" onchange="applyFilters()"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                                            <option value="all" <?php echo $ranking_type_filter === 'all' ? 'selected' : ''; ?>>All Types</option>
+                                            <option value="deans_list" <?php echo $ranking_type_filter === 'deans_list' ? 'selected' : ''; ?>>Dean's List</option>
+                                            <option value="latin_honors" <?php echo $ranking_type_filter === 'latin_honors' ? 'selected' : ''; ?>>Latin Honors</option>
+                                        </select>
+                                    </div>
+
+                                    <!-- Period Filter -->
+                                    <div>
+                                        <label class="block text-sm font-medium text-gray-700 mb-2">Academic Period</label>
+                                        <select id="period_filter" onchange="applyFilters()"
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
+                                            <option value="all" <?php echo $filter_period === 'all' ? 'selected' : ''; ?>>Current Period</option>
+                                            <?php foreach ($available_periods as $period): ?>
+                                                <option value="<?php echo $period['id']; ?>" <?php echo $filter_period == $period['id'] ? 'selected' : ''; ?>>
+                                                    <?php echo $period['semester']; ?> Sem SY <?php echo $period['school_year']; ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <!-- Clear Filters Button -->
+                                <div class="flex justify-center mt-6">
+                                    <button type="button" onclick="clearFilters()"
+                                            class="inline-flex items-center px-6 py-3 text-sm font-medium text-white bg-gradient-to-r from-red-500 to-red-600 border border-transparent rounded-xl hover:from-red-600 hover:to-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 shadow-sm hover:shadow-md transform hover:scale-105 transition-all duration-200">
+                                        <i data-lucide="filter-x" class="w-4 h-4 mr-2"></i>
+                                        Clear All Filters
+                                    </button>
                                 </div>
                             </div>
                         </div>
-                    <?php endif; ?>
+                    </div>
+
+                    <!-- Rankings Table -->
+                    <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
+                        <div class="px-6 py-4 border-b border-gray-200">
+                            <h3 class="text-lg font-semibold text-gray-900">
+                                Honor Rankings
+                                <span class="text-sm font-normal text-gray-500">(<?php echo count($rankings); ?> students)</span>
+                            </h3>
+                            <?php if (isset($debug_message)): ?>
+                                <div class="text-xs text-gray-400 mt-2">
+                                    Debug: <?php echo htmlspecialchars($debug_message); ?>
+                                </div>
+                            <?php endif; ?>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <?php if (empty($rankings)): ?>
+                                <div class="text-center py-12">
+                                    <i data-lucide="award" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
+                                    <h4 class="text-xl font-medium text-gray-900 mb-2">No Rankings Found</h4>
+                                    <p class="text-gray-500">
+                                        <?php if (!$active_period): ?>
+                                            Set an active academic period to see rankings.
+                                        <?php else: ?>
+                                            Rankings are automatically generated from student grades.
+                                        <?php endif; ?>
+                                    </p>
+                                </div>
+                            <?php else: ?>
+                                <table class="min-w-full divide-y divide-gray-200">
+                                    <thead class="bg-gray-50">
+                                        <tr>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rank</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Student</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Year & Section</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Honor Type</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">GWA</th>
+                                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Percentile</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="bg-white divide-y divide-gray-200">
+                                        <?php
+                                        $rank = 1;
+                                        foreach ($rankings as $ranking):
+                                            $total_eligible = count($rankings);
+                                            $percentile = $total_eligible > 1 ? round(($total_eligible - $rank) * 100.0 / ($total_eligible - 1), 1) : 100.0;
+                                            $is_current_student = ($ranking['user_id'] == $student_id);
+                                        ?>
+                                            <tr class="hover:bg-gray-50 <?php echo $is_current_student ? 'bg-primary-50' : ''; ?>">
+                                                <td class="px-6 py-4 whitespace-nowrap">
+                                                    <div class="flex items-center">
+                                                        <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold <?php echo $rank <= 3 ? ($rank === 1 ? 'bg-yellow-100 text-yellow-800' : ($rank === 2 ? 'bg-gray-100 text-gray-800' : 'bg-orange-100 text-orange-800')) : 'bg-blue-100 text-blue-800'; ?>">
+                                                            #<?php echo $rank; ?>
+                                                        </div>
+                                                        <?php if ($is_current_student): ?>
+                                                            <span class="ml-2 px-2 py-1 text-xs font-medium bg-primary-600 text-white rounded-full">You</span>
+                                                        <?php endif; ?>
+                                                    </div>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap">
+                                                    <div>
+                                                        <div class="text-sm font-medium text-gray-900 <?php echo $is_current_student ? 'font-bold' : ''; ?>">
+                                                            <?php echo htmlspecialchars($ranking['first_name'] . ' ' . $ranking['last_name']); ?>
+                                                        </div>
+                                                        <div class="text-sm text-gray-500">
+                                                            <?php echo htmlspecialchars($ranking['student_id']); ?>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap">
+                                                    <span class="text-sm text-gray-900"><?php echo $ranking['year_level'] . htmlspecialchars(formatSectionDisplay($ranking['section'])); ?></span>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap">
+                                                    <?php if ($ranking['gwa'] !== null): ?>
+                                                        <?php if (isset($ranking['has_approved_latin_honors']) && $ranking['has_approved_latin_honors']): ?>
+                                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                                                <i data-lucide="crown" class="w-3 h-3 mr-1"></i>
+                                                                Latin Honors
+                                                            </span>
+                                                        <?php elseif ($ranking['gwa'] <= 1.75): ?>
+                                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                                                <i data-lucide="star" class="w-3 h-3 mr-1"></i>
+                                                                Dean's List
+                                                            </span>
+                                                        <?php else: ?>
+                                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                                                                Regular
+                                                            </span>
+                                                        <?php endif; ?>
+                                                    <?php else: ?>
+                                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                                                            No Status
+                                                        </span>
+                                                    <?php endif; ?>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap text-sm <?php echo $is_current_student ? 'font-bold text-primary-600' : 'text-gray-900'; ?>">
+                                                    <?php echo number_format($ranking['gwa'], 2); ?>
+                                                </td>
+                                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                    <?php echo number_format($percentile, 1); ?>%
+                                                </td>
+                                            </tr>
+                                        <?php
+                                            $rank++;
+                                        endforeach;
+                                        ?>
+                                    </tbody>
+                                </table>
+                            <?php endif; ?>
+                        </div>
+                    </div>
                 </div>
             </main>
         </div>
     </div>
 
     <script>
+        // Initialize Lucide icons
         lucide.createIcons();
+
+        // Apply all filters
+        function applyFilters() {
+            const url = new URL(window.location);
+
+            // Get all filter values
+            const year_filter = document.getElementById('year_filter').value;
+            const section_filter = document.getElementById('section_filter').value;
+            const ranking_type_filter = document.getElementById('ranking_type_filter').value;
+            const period_filter = document.getElementById('period_filter').value;
+            const search = document.getElementById('search').value;
+
+            // Set or remove parameters
+            if (year_filter !== 'all') {
+                url.searchParams.set('year', year_filter);
+            } else {
+                url.searchParams.delete('year');
+            }
+
+            if (section_filter !== 'all') {
+                url.searchParams.set('section', section_filter);
+            } else {
+                url.searchParams.delete('section');
+            }
+
+            if (ranking_type_filter !== 'all') {
+                url.searchParams.set('ranking_type', ranking_type_filter);
+            } else {
+                url.searchParams.delete('ranking_type');
+            }
+
+            if (period_filter !== 'all') {
+                url.searchParams.set('period', period_filter);
+            } else {
+                url.searchParams.delete('period');
+            }
+
+            if (search) {
+                url.searchParams.set('search', search);
+            } else {
+                url.searchParams.delete('search');
+            }
+
+            window.location.href = url.toString();
+        }
+
+        // Clear all filters
+        function clearFilters() {
+            const url = new URL(window.location);
+            url.searchParams.delete('year');
+            url.searchParams.delete('section');
+            url.searchParams.delete('ranking_type');
+            url.searchParams.delete('period');
+            url.searchParams.delete('search');
+            window.location.href = url.toString();
+        }
+
+        // Search functionality with debounce
+        document.getElementById('search').addEventListener('input', function(e) {
+            clearTimeout(this.searchTimeout);
+            this.searchTimeout = setTimeout(() => {
+                applyFilters();
+            }, 500);
+        });
     </script>
 </body>
 </html>
