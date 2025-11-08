@@ -6,14 +6,14 @@ use Mpdf\Mpdf;
 
 requireLogin();
 
-if (!hasRole('adviser')) {
+if (!hasRole('student')) {
     redirect('../login.php');
 }
 
 $database = new Database();
 $db = $database->getConnection();
 
-$adviser_id = $_SESSION['user_id'];
+$student_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
 
 // Get the chairperson for this department to show in footer

@@ -9,15 +9,23 @@ use PhpOffice\PhpWord\Style\Table;
 
 requireLogin();
 
-if (!hasRole('chairperson')) {
+if (!hasRole('adviser')) {
     redirect('../login.php');
 }
 
 $database = new Database();
 $db = $database->getConnection();
 
-$chairperson_id = $_SESSION['user_id'];
+$adviser_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
+
+// Get the chairperson for this department to show in footer
+$chair_query_dept = "SELECT id FROM users WHERE role = 'chairperson' AND department = :department AND status = 'active' LIMIT 1";
+$chair_stmt_dept = $db->prepare($chair_query_dept);
+$chair_stmt_dept->bindParam(':department', $department);
+$chair_stmt_dept->execute();
+$chair_dept = $chair_stmt_dept->fetch(PDO::FETCH_ASSOC);
+$chairperson_id = $chair_dept['id'] ?? null;
 
 // Department to abbreviation mapping
 $department_abbr_map = [
@@ -388,7 +396,7 @@ foreach ($students as $index => $student) {
     } else {
         // Different GPA, update rank
         $rank = $index + 1 - $same_rank_count;
-        $display_rank = $rank;
+        $display_rank = $rank . '.';
         $same_rank_count = 0;
     }
     $previous_gpa = $gpa;

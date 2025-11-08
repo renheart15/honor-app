@@ -119,6 +119,10 @@ function getOrdinalSuffix($number) {
                         <i data-lucide="award" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Honor Rankings
                     </a>
+                    <a href="reports.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="file-bar-chart" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Reports
+                    </a>
                     <a href="profile.php" class="bg-primary-50 border-r-2 border-primary-600 text-primary-700 group flex items-center px-2 py-2 text-sm font-medium rounded-l-xl">
                         <i data-lucide="settings" class="text-primary-500 mr-3 h-5 w-5"></i>
                         Profile

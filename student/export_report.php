@@ -1,19 +1,22 @@
 <?php
 require_once '../config/config.php';
-require_once '../vendor/autoload.php';
+require_once '../vendor/autoload.php'; // For PHPWord
 
-use Mpdf\Mpdf;
+use PhpOffice\PhpWord\PhpWord;
+use PhpOffice\PhpWord\IOFactory;
+use PhpOffice\PhpWord\SimpleType\Jc;
+use PhpOffice\PhpWord\Style\Table;
 
 requireLogin();
 
-if (!hasRole('adviser')) {
+if (!hasRole('student')) {
     redirect('../login.php');
 }
 
 $database = new Database();
 $db = $database->getConnection();
 
-$adviser_id = $_SESSION['user_id'];
+$student_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
 
 // Get the chairperson for this department to show in footer
@@ -56,7 +59,7 @@ $department_abbr = $department_abbr_map[$department] ?? $department;
 // Get filter parameters from query string
 $year_filter = $_GET['year'] ?? 'all';
 $section_filter = $_GET['section'] ?? 'all';
-$ranking_type_filter = $_GET['ranking_type'] ?? 'deans_list';
+$ranking_type_filter = $_GET['ranking_type'] ?? 'deans_list'; // Default to Dean's List
 $period_filter = $_GET['period'] ?? 'all';
 
 // Build WHERE clause for filters
@@ -178,13 +181,110 @@ $chairperson_name = strtoupper($chairperson_info['first_name'] . ' ' .
                                ($chairperson_info['middle_name'] ? substr($chairperson_info['middle_name'], 0, 1) . '. ' : '') .
                                $chairperson_info['last_name']);
 
-// Program text
+// Create new PHPWord document
+$phpWord = new PhpWord();
+
+// Document settings
+$phpWord->getSettings()->setZoom(100);
+$section = $phpWord->addSection([
+    'pageSizeW' => 12240,  // 8.5 inches
+    'pageSizeH' => 18720,  // 13 inches
+    'marginLeft' => 1440,   // 1 inch
+    'marginRight' => 1440,  // 1 inch
+    'marginTop' => 500,    // 1 inch
+    'marginBottom' => 1440  // 1 inch
+]);
+
+// --- HEADER WITH LOGOS AND TEXT (CENTERED BETWEEN LOGOS) ---
+
+// Create a table with 3 columns: left (CTU logo), middle (text), right (Bagong Pilipinas logo)
+$headerTable = $section->addTable();
+$headerTable->addRow();
+
+// Left cell: CTU logo
+$headerTable->addCell(3500, ['valign' => 'center'])->addImage(
+    '../img/cebu-technological-university-seeklogo.png', // Update this path
+    [
+        'width' => 95,
+        'height' => 95,
+        'alignment' => Jc::LEFT
+    ]
+);
+
+// Middle cell: Header text (centered)
+$middleCell = $headerTable->addCell(9000, ['valign' => 'center']);
+
+// Compact paragraph style (no after-space)
+$noSpace = ['alignment' => Jc::CENTER, 'spaceAfter' => 0];
+
+$middleCell->addText('Republic of the Philippines', ['size' => 12, 'name' => 'Arial'], $noSpace);
+$middleCell->addText('CEBU TECHNOLOGICAL UNIVERSITY', ['bold' => true, 'size' => 12, 'name' => 'Arial'], $noSpace);
+$middleCell->addText('TUBURAN CAMPUS', ['bold' => true, 'size' => 11, 'name' => 'Arial'], $noSpace);
+$middleCell->addText('Brgy 8, Poblacion Tuburan, Cebu, Philippines', ['size' => 10, 'name' => 'Arial'], $noSpace);
+
+// Website and Email — underline individually
+$websiteRun = $middleCell->addTextRun(['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
+$websiteRun->addText('Website: ', ['size' => 8, 'name' => 'Arial']);
+$websiteRun->addText('http://www.ctu.edu.ph', [
+    'size' => 8,
+    'name' => 'Arial',
+    'underline' => 'single',
+    'color' => '0000FF'
+]);
+$websiteRun->addText(' E-mail: ', ['size' => 8, 'name' => 'Arial']);
+$websiteRun->addText('tuburan.campus@ctu.edu.ph', [
+    'size' => 8,
+    'name' => 'Arial',
+    'underline' => 'single',
+    'color' => '0000FF'
+]);
+
+// Phone line
+$middleCell->addText(
+    'Phone: +6332 463 9313 loc. 1512',
+    ['size' => 9, 'name' => 'Arial'],
+    $noSpace
+);
+
+// Right cell: Bagong Pilipinas logo
+$headerTable->addCell(3500, ['valign' => 'center'])->addImage(
+    '../img/Bagong-Pilipinas-Logo-1536x1444.png', // Update this path
+    
+    [
+        'width' => 95,
+        'height' => 90,
+        'alignment' => Jc::RIGHT
+    ]
+);
+
+// Add space after header
+$section->addTextBreak(0);
+
+
 $program_text = strtoupper($department) . ' (' . strtoupper($department_abbr) . ')';
 
-// Title text
-$title_text = $ranking_type_filter === 'latin_honors' ? "LATIN HONORS" : "DEAN'S LISTERS";
+$section->addText(
+    $program_text,
+    ['size' => 10, 'name' => 'Arial'],
+    ['alignment' => Jc::CENTER, 'spaceAfter' => 0]
+);
 
-// Year level text
+// DEAN'S LISTERS
+$title_text = $ranking_type_filter === 'latin_honors' ? "LATIN HONORS" : "DEAN'S LISTERS";
+$section->addText(
+    $title_text,
+    ['bold' => true, 'size' => 11, 'name' => 'Arial'],
+    ['alignment' => Jc::CENTER, 'spaceAfter' => 0]
+);
+
+// Semester info
+$section->addText(
+    $semester_text . ' Semester, A.Y. ' . $school_year,
+    ['bold' => true, 'size' => 11, 'name' => 'Arial'],
+    ['alignment' => Jc::CENTER, 'spaceAfter' => 200]
+);
+
+// Year level
 $year_level_text = "";
 if ($year_filter !== 'all') {
     $year_level_map = [
@@ -197,156 +297,77 @@ if ($year_filter !== 'all') {
 } else {
     $year_level_text = 'ALL YEAR LEVELS';
 }
+$section->addText(
+    $year_level_text,
+    ['bold' => true, 'size' => 11, 'name' => 'Arial'],
+    ['alignment' => Jc::START, 'spaceAfter' => 200]
+);
 
-// Generate filename
-$filename = strtolower(str_replace(' ', '_', $title_text)) . '_' .
-            strtolower(str_replace(' ', '_', $semester_text)) . '_' .
-            str_replace('-', '', $school_year) . '.pdf';
+// --- Table style that respects 1-inch left/right margins ---
+// page width in twips (you set pageSizeW => 12240 earlier)
+$pageWidth = 12240;
+// margins (twips)
+$marginLeft = 1440;
+$marginRight = 1440;
+// usable table width
+$tableWidth = $pageWidth - ($marginLeft + $marginRight); // 12240 - 2880 = 9360
 
-// Build HTML content
-$html = '
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-        }
-        .header-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 5px;
-        }
-        .header-table td {
-            vertical-align: middle;
-        }
-        .header-table .logo-left {
-            width: 95px;
-            text-align: left;
-        }
-        .header-table .logo-right {
-            width: 95px;
-            text-align: right;
-        }
-        .header-table .header-text {
-            text-align: center;
-            line-height: 1.2;
-        }
-        .header-text p {
-            margin: 0;
-            padding: 0;
-        }
-        .title-section {
-            text-align: center;
-            margin-bottom: 0;
-        }
-        .year-level {
-            text-align: left;
-            font-weight: bold;
-            font-size: 11pt;
-            margin-top: 14pt;
-            margin-bottom: 14pt;
-        }
-        .data-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 15px;
-        }
-        .data-table th {
-            border-top: none;
-            border-left: none;
-            border-right: none;
-            border-bottom: 1px solid #000;
-            padding: 8px;
-            font-weight: bold;
-            font-size: 10pt;
-            text-align: center;
-        }
-        .data-table td {
-            border: 1px solid #000;
-            padding: 6px 8px;
-            font-size: 11pt;
-        }
-        .data-table .rank-col {
-            width: 13%;
-            text-align: center;
-        }
-        .data-table .name-col {
-            width: 37%;
-            text-align: left;
-        }
-        .data-table .section-col {
-            width: 25%;
-            text-align: center;
-        }
-        .data-table .gpa-col {
-            width: 20%;
-            text-align: center;
-        }
-        .footer-section {
-            margin-top: 12pt;
-        }
-        .footer-section p {
-            margin: 0;
-            font-size: 11pt;
-            line-height: 1.3;
-        }
-    </style>
-</head>
-<body>
-    <!-- HEADER WITH LOGOS -->
-    <table class="header-table">
-        <tr>
-            <td class="logo-left">
-                <img src="' . realpath(__DIR__ . '/../img/cebu-technological-university-seeklogo.png') . '" width="95" height="95" />
-            </td>
-            <td class="header-text">
-                <p style="font-size: 12pt;">Republic of the Philippines</p>
-                <p style="font-size: 12pt; font-weight: bold;">CEBU TECHNOLOGICAL UNIVERSITY</p>
-                <p style="font-size: 11pt; font-weight: bold;">TUBURAN CAMPUS</p>
-                <p style="font-size: 10pt;">Brgy 8, Poblacion Tuburan, Cebu, Philippines</p>
-                <p style="font-size: 8pt;">Website: <span style="text-decoration: underline; color: blue;">http://www.ctu.edu.ph</span> E-mail: <span style="text-decoration: underline; color: blue;">tuburan.campus@ctu.edu.ph</span></p>
-                <p style="font-size: 9pt;">Phone: +6332 463 9313 loc. 1512</p>
-            </td>
-            <td class="logo-right">
-                <img src="' . realpath(__DIR__ . '/../img/Bagong-Pilipinas-Logo-1536x1444.png') . '" width="95" height="90" />
-            </td>
-        </tr>
-    </table>
+// Base column proportions (original widths you used: 1000,4000,2500,1500)
+$baseCols = [1250, 3500, 2350, 1900];
+$baseTotal = array_sum($baseCols);
 
-    <!-- PROGRAM NAME -->
-    <div class="title-section">
-        <p style="font-size: 10pt; margin: 0; padding: 0;">' . htmlspecialchars($program_text) . '</p>
-    </div>
+// Compute scaled column widths so they sum to $tableWidth
+$colWidths = [];
+foreach ($baseCols as $w) {
+    $colWidths[] = (int) round($w / $baseTotal * $tableWidth);
+}
+// Adjust last column to fix any rounding difference
+$sumCols = array_sum($colWidths);
+if ($sumCols !== $tableWidth) {
+    $diff = $tableWidth - $sumCols;
+    $colWidths[count($colWidths)-1] += $diff;
+}
 
-    <!-- TITLE -->
-    <div class="title-section">
-        <p style="font-size: 11pt; font-weight: bold; margin: 0; padding: 0;">' . htmlspecialchars($title_text) . '</p>
-    </div>
+// Table style (use twips width)
+$tableStyle = [
+    'borderSize' => 6,
+    'borderColor' => '000000',
+    'cellMargin' => 20,
+    'alignment' => Jc::CENTER,
+    'width' => $tableWidth, // explicit width in twips
+    // don't rely on WIDTH_PERCENT constant — specifying twips is safest
+];
 
-    <!-- SEMESTER INFO -->
-    <div class="title-section">
-        <p style="font-size: 11pt; font-weight: bold; margin: 0 0 14pt 0; padding: 0;">' . htmlspecialchars($semester_text) . ' Semester, A.Y. ' . htmlspecialchars($school_year) . '</p>
-    </div>
+$phpWord->addTableStyle('deansList', $tableStyle);
 
-    <!-- YEAR LEVEL -->
-    <div class="year-level">
-        ' . htmlspecialchars($year_level_text) . '
-    </div>
+// Center the table manually
+$table = $section->addTable('deansList', ['alignment' => Jc::CENTER]);
 
-    <!-- DATA TABLE -->
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th class="rank-col">RANK</th>
-                <th class="name-col">COMPLETE NAME</th>
-                <th class="section-col">BLOCK SECTION</th>
-                <th class="gpa-col">GPA</th>
-            </tr>
-        </thead>
-        <tbody>';
+$phpWord->addTableStyle('deansList', $tableStyle);
+
+// Add table
+$table = $section->addTable('deansList');
+
+// Header row
+$table->addRow(300);
+$headerStyle = ['bold' => true, 'size' => 10, 'name' => 'Arial'];
+$headerCenterStyle = ['alignment' => Jc::CENTER, 'spaceAfter' => 0, 'spaceBefore' => 0];
+$noBorderStyle = [
+    'valign' => 'center',
+    'borderTopSize' => 0,
+    'borderTopColor' => 'FFFFFF',
+    'borderBottomSize' => 6,
+    'borderBottomColor' => '000000',
+    'borderLeftSize' => 0,
+    'borderLeftColor' => 'FFFFFF',
+    'borderRightSize' => 0,
+    'borderRightColor' => 'FFFFFF'
+];
+
+$table->addCell($colWidths[0], $noBorderStyle)->addText('RANK', $headerStyle, $headerCenterStyle);
+$table->addCell($colWidths[1], $noBorderStyle)->addText('COMPLETE NAME', $headerStyle, $headerCenterStyle);
+$table->addCell($colWidths[2], $noBorderStyle)->addText('BLOCK SECTION', $headerStyle, $headerCenterStyle);
+$table->addCell($colWidths[3], $noBorderStyle)->addText('GPA', $headerStyle, $headerCenterStyle);
 
 // Add student data
 $rank = 1;
@@ -363,60 +384,67 @@ foreach ($students as $index => $student) {
     $student_section = strtoupper(trim($student['section']));
     $section_display = "{$department_abbr}-{$year}{$student_section}";
 
+
     // Format GPA
     $gpa = number_format($student['gpa'], 3);
 
     // Handle ranking (same GPA gets same rank)
     if ($previous_gpa !== null && $gpa == $previous_gpa) {
+        // Same GPA as previous, don't increment rank
         $same_rank_count++;
-        $display_rank = '';
+        $display_rank = ''; // Don't show rank number for tied students after the first
     } else {
+        // Different GPA, update rank
         $rank = $index + 1 - $same_rank_count;
         $display_rank = $rank . '.';
         $same_rank_count = 0;
     }
     $previous_gpa = $gpa;
 
-    $html .= '
-            <tr>
-                <td class="rank-col">' . htmlspecialchars($display_rank) . '</td>
-                <td class="name-col">' . htmlspecialchars($full_name) . '</td>
-                <td class="section-col">' . htmlspecialchars($section_display) . '</td>
-                <td class="gpa-col">' . htmlspecialchars($gpa) . '</td>
-            </tr>';
+    // Add row
+    $table->addRow(250);
+    $cellStyle = ['size' => 11, 'name' => 'Arial'];
+    $cellLeftStyle = ['alignment' => Jc::LEFT, 'spaceAfter' => 0, 'spaceBefore' => 0];
+    $cellCenterStyle = ['alignment' => Jc::CENTER, 'spaceAfter' => 0, 'spaceBefore' => 0];
+
+    $table->addCell($colWidths[0], ['valign' => 'center'])->addText($display_rank, $cellStyle, $cellCenterStyle);
+    $table->addCell($colWidths[1], ['valign' => 'center'])->addText($full_name, $cellStyle, $cellLeftStyle);
+    $table->addCell($colWidths[2], ['valign' => 'center'])->addText($section_display, $cellStyle, $cellCenterStyle);
+    $table->addCell($colWidths[3], ['valign' => 'center'])->addText($gpa, $cellStyle, $cellCenterStyle);
 }
 
-$html .= '
-        </tbody>
-    </table>
+// Add footer
+$section->addTextBreak(1);
+$section->addText(
+    'Consolidated by:',
+    ['size' => 11, 'name' => 'Arial'],
+    ['alignment' => Jc::START, 'spaceAfter' => 0]
+);
+$section->addTextBreak(1);
+$section->addText(
+    $chairperson_name,
+    ['bold' => true, 'size' => 11, 'name' => 'Arial'],
+    ['alignment' => Jc::START, 'spaceAfter' => 0]
+);
+$section->addText(
+    'Chairperson, ' . $department_abbr,
+    ['size' => 11, 'name' => 'Arial'],
+    ['alignment' => Jc::START, 'spaceAfter' => 0]
+);
 
-    <!-- FOOTER -->
-    <div class="footer-section">
-        <p style="margin: 0; padding: 0;">Consolidated by:</p>
-        <br/>
-        <p style="font-weight: bold; margin: 0; padding: 0;">' . htmlspecialchars($chairperson_name) . '</p>
-        <p style="margin: 0; padding: 0;">Chairperson, ' . htmlspecialchars($department_abbr) . '</p>
-    </div>
-</body>
-</html>';
 
-// Initialize mPDF
-$mpdf = new Mpdf([
-    'format' => 'Legal',
-    'margin_left' => 25.4,    // 1 inch = 25.4mm
-    'margin_right' => 25.4,
-    'margin_top' => 12.7,     // ~0.5 inch
-    'margin_bottom' => 25.4,
-    'tempDir' => __DIR__ . '/../tmp'
-]);
+// Generate filename
+$filename = strtolower(str_replace(' ', '_', $title_text)) . '_' .
+            strtolower(str_replace(' ', '_', $semester_text)) . '_' .
+            str_replace('-', '', $school_year) . '.docx';
 
-// Write HTML content
-$mpdf->WriteHTML($html);
+// Set headers for download
+header('Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+header('Content-Disposition: attachment; filename="' . $filename . '"');
+header('Cache-Control: max-age=0');
 
-// Output to browser
-header('Content-Type: application/pdf');
-header('Content-Disposition: inline; filename="' . $filename . '"');
-$mpdf->Output($filename, \Mpdf\Output\Destination::INLINE);
-
+// Save to output
+$objWriter = IOFactory::createWriter($phpWord, 'Word2007');
+$objWriter->save('php://output');
 exit();
 ?>

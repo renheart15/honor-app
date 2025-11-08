@@ -3,14 +3,14 @@ require_once '../config/config.php';
 
 requireLogin();
 
-if (!hasRole('adviser')) {
+if (!hasRole('student')) {
     redirect('../login.php');
 }
 
 $database = new Database();
 $db = $database->getConnection();
 
-$adviser_id = $_SESSION['user_id'];
+$student_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
 
 // Get filter parameters
@@ -407,12 +407,12 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                 <!-- User Profile -->
                 <div class="mt-8 px-4">
                     <div class="flex items-center">
-                        <div class="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
-                            <i data-lucide="user-check" class="w-5 h-5 text-green-600"></i>
+                        <div class="w-10 h-10 bg-primary-100 rounded-xl flex items-center justify-center">
+                            <i data-lucide="user" class="w-5 h-5 text-primary-600"></i>
                         </div>
                         <div class="ml-3">
                             <p class="text-sm font-semibold text-gray-900"><?php echo $_SESSION['first_name'] . ' ' . $_SESSION['last_name']; ?></p>
-                            <p class="text-xs text-gray-500">Adviser</p>
+                            <p class="text-xs text-gray-500">Student</p>
                         </div>
                     </div>
                 </div>
@@ -423,25 +423,25 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                         <i data-lucide="layout-dashboard" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Dashboard
                     </a>
-                    <a href="submissions.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
-                        <i data-lucide="file-text" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Grade Submissions
+                    <a href="grades.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="bar-chart-3" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        My Grades
                     </a>
                     <a href="applications.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="trophy" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Honor Applications
-                    </a>
-                    <a href="students.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
-                        <i data-lucide="users" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Students
+                        Applications
                     </a>
                     <a href="rankings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="award" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Honor Rankings
                     </a>
-                    <a href="reports.php" class="bg-green-50 border-r-2 border-green-600 text-green-700 group flex items-center px-2 py-2 text-sm font-medium rounded-l-xl">
-                        <i data-lucide="bar-chart-3" class="text-green-500 mr-3 h-5 w-5"></i>
+                    <a href="reports.php" class="bg-primary-50 border-r-2 border-primary-600 text-primary-700 group flex items-center px-2 py-2 text-sm font-medium rounded-l-xl">
+                        <i data-lucide="file-bar-chart" class="text-primary-500 mr-3 h-5 w-5"></i>
                         Reports
+                    </a>
+                    <a href="profile.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Profile
                     </a>
                 </nav>
 

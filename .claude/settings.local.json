@@ -15,7 +15,8 @@
       "Bash(do grep -n \"bg-primary-600 rounded-xl flex items-center justify-center\" \"$file\")",
       "Bash(done)",
       "Read(//c/Users/ralfa/Downloads/**)",
-      "Bash(composer update:*)"
+      "Bash(composer update:*)",
+      "Bash(cp:*)"
     ],
     "deny": [],
     "ask": []
