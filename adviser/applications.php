@@ -106,12 +106,13 @@ if (!empty($adviser_sections)) {
     $section_where = '(' . implode(' OR ', $section_conditions) . ')';
 
     $query = "SELECT ha.*, u.first_name, u.last_name, u.student_id, u.section, u.year_level,
-                     ap.semester as period_semester, ap.school_year as period_academic_year
+                     ap.semester as period_semester, ap.school_year as period_academic_year,
+                     ha.is_eligible, ha.ineligibility_reasons
               FROM honor_applications ha
               JOIN users u ON ha.user_id = u.id
               JOIN academic_periods ap ON ha.academic_period_id = ap.id
               WHERE u.department = ? AND $section_where
-              ORDER BY ha.submitted_at DESC";
+              ORDER BY ha.is_eligible ASC, ha.submitted_at DESC";
 
     $stmt = $db->prepare($query);
     $stmt->execute($params);
@@ -257,7 +258,7 @@ if ($filter !== 'all') {
             <!-- Top Navigation -->
             <header class="bg-white shadow-sm border-b border-gray-200">
                 <div class="flex items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-                    <div class="flex items-center">
+                    <div class="flex items-center flex-1">
                         <button type="button" class="md:hidden -ml-0.5 -mt-0.5 h-12 w-12 inline-flex items-center justify-center rounded-xl text-gray-500 hover:text-gray-900">
                             <i data-lucide="menu" class="h-6 w-6"></i>
                         </button>
@@ -287,7 +288,26 @@ if ($filter !== 'all') {
                     </div>
                     
                     <div class="flex items-center space-x-4">
-                        <select onchange="filterApplications(this.value)" 
+                        <!-- Notification Bell -->
+                        <div class="relative">
+                            <button onclick="toggleNotifications()" class="relative p-2 text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded-xl">
+                                <i data-lucide="bell" class="h-6 w-6"></i>
+                                <span id="notificationBadge" class="hidden absolute top-0 right-0 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white transform translate-x-1/2 -translate-y-1/2 bg-red-600 rounded-full"></span>
+                            </button>
+
+                            <!-- Notification Dropdown -->
+                            <div id="notificationPanel" class="hidden absolute right-0 mt-2 w-96 bg-white rounded-xl shadow-lg border border-gray-200 z-50 max-h-96 overflow-y-auto">
+                                <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+                                    <h3 class="text-lg font-semibold text-gray-900">Notifications</h3>
+                                    <button onclick="markAllAsRead()" class="text-sm text-primary-600 hover:text-primary-700">Mark all read</button>
+                                </div>
+                                <div id="notificationList" class="divide-y divide-gray-200">
+                                    <div class="p-4 text-center text-gray-500">Loading...</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <select onchange="filterApplications(this.value)"
                                 class="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
                             <option value="all" <?php echo $filter === 'all' ? 'selected' : ''; ?>>All Applications</option>
                             <option value="submitted" <?php echo $filter === 'submitted' ? 'selected' : ''; ?>>Submitted</option>
@@ -295,6 +315,8 @@ if ($filter !== 'all') {
                             <option value="rejected" <?php echo $filter === 'rejected' ? 'selected' : ''; ?>>Rejected</option>
                         </select>
                     </div>
+
+                    <?php include 'includes/header.php'; ?>
                 </div>
             </header>
 
@@ -356,21 +378,35 @@ if ($filter !== 'all') {
                                     </thead>
                                     <tbody class="bg-white divide-y divide-gray-200">
                                         <?php foreach ($applications as $application): ?>
-                                            <tr class="hover:bg-gray-50 transition-colors">
+                                            <tr class="hover:bg-gray-50 transition-colors <?php echo !$application['is_eligible'] ? 'bg-amber-50 border-l-4 border-amber-500' : ''; ?>">
                                                 <td class="px-6 py-4 whitespace-nowrap">
                                                     <div class="flex items-center">
-                                                        <div class="w-10 h-10 bg-primary-100 rounded-full flex items-center justify-center">
-                                                            <span class="text-sm font-medium text-primary-600">
-                                                                <?php echo strtoupper(substr($application['first_name'], 0, 1) . substr($application['last_name'], 0, 1)); ?>
-                                                            </span>
+                                                        <div class="w-10 h-10 <?php echo !$application['is_eligible'] ? 'bg-amber-100' : 'bg-primary-100'; ?> rounded-full flex items-center justify-center">
+                                                            <?php if (!$application['is_eligible']): ?>
+                                                                <i data-lucide="alert-triangle" class="w-5 h-5 text-amber-600"></i>
+                                                            <?php else: ?>
+                                                                <span class="text-sm font-medium text-primary-600">
+                                                                    <?php echo strtoupper(substr($application['first_name'], 0, 1) . substr($application['last_name'], 0, 1)); ?>
+                                                                </span>
+                                                            <?php endif; ?>
                                                         </div>
                                                         <div class="ml-4">
                                                             <div class="text-sm font-medium text-gray-900">
                                                                 <?php echo htmlspecialchars($application['first_name'] . ' ' . $application['last_name']); ?>
+                                                                <?php if (!$application['is_eligible']): ?>
+                                                                    <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
+                                                                        Not Eligible
+                                                                    </span>
+                                                                <?php endif; ?>
                                                             </div>
                                                             <div class="text-sm text-gray-500">
                                                                 <?php echo htmlspecialchars($application['student_id']); ?> • <?php echo htmlspecialchars(formatSectionDisplay($application['section'])); ?>
                                                             </div>
+                                                            <?php if (!$application['is_eligible'] && $application['ineligibility_reasons']): ?>
+                                                                <div class="mt-1 text-xs text-amber-700 font-medium">
+                                                                    ⚠ <?php echo htmlspecialchars($application['ineligibility_reasons']); ?>
+                                                                </div>
+                                                            <?php endif; ?>
                                                         </div>
                                                     </div>
                                                 </td>
@@ -474,7 +510,7 @@ if ($filter !== 'all') {
 
     <script>
         lucide.createIcons();
-        
+
         function filterApplications(filter) {
             window.location.href = 'applications.php?filter=' + filter;
         }
@@ -500,6 +536,145 @@ if ($filter !== 'all') {
         function hideRejectModal() {
             document.getElementById('rejectModal').classList.add('hidden');
         }
+
+        // Notification System
+        let notificationPanelOpen = false;
+
+        function toggleNotifications() {
+            const panel = document.getElementById('notificationPanel');
+            notificationPanelOpen = !notificationPanelOpen;
+
+            if (notificationPanelOpen) {
+                panel.classList.remove('hidden');
+                loadNotifications();
+            } else {
+                panel.classList.add('hidden');
+            }
+        }
+
+        function loadNotifications() {
+            fetch('../api/notifications.php')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayNotifications(data.notifications);
+                        updateNotificationBadge(data.unread_count);
+                    }
+                })
+                .catch(error => console.error('Error loading notifications:', error));
+        }
+
+        function displayNotifications(notifications) {
+            const list = document.getElementById('notificationList');
+
+            if (notifications.length === 0) {
+                list.innerHTML = '<div class="p-4 text-center text-gray-500">No notifications</div>';
+                return;
+            }
+
+            list.innerHTML = notifications.map(notif => `
+                <div class="p-4 hover:bg-gray-50 ${notif.is_read == 0 ? 'bg-blue-50' : ''} cursor-pointer" onclick="markAsRead(${notif.id})">
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <div class="w-10 h-10 rounded-full flex items-center justify-center ${
+                                notif.type === 'warning' ? 'bg-amber-100' :
+                                notif.type === 'success' ? 'bg-green-100' :
+                                notif.type === 'error' ? 'bg-red-100' : 'bg-blue-100'
+                            }">
+                                <i data-lucide="${
+                                    notif.type === 'warning' ? 'alert-triangle' :
+                                    notif.type === 'success' ? 'check-circle' :
+                                    notif.type === 'error' ? 'x-circle' : 'info'
+                                }" class="w-5 h-5 ${
+                                    notif.type === 'warning' ? 'text-amber-600' :
+                                    notif.type === 'success' ? 'text-green-600' :
+                                    notif.type === 'error' ? 'text-red-600' : 'text-blue-600'
+                                }"></i>
+                            </div>
+                        </div>
+                        <div class="ml-3 flex-1">
+                            <p class="text-sm font-semibold text-gray-900">${notif.title}</p>
+                            <p class="text-sm text-gray-600 mt-1">${notif.message}</p>
+                            <p class="text-xs text-gray-400 mt-1">${formatDate(notif.created_at)}</p>
+                        </div>
+                        ${notif.is_read == 0 ? '<div class="ml-2"><span class="inline-block w-2 h-2 bg-blue-600 rounded-full"></span></div>' : ''}
+                    </div>
+                </div>
+            `).join('');
+
+            // Recreate icons after updating DOM
+            lucide.createIcons();
+        }
+
+        function updateNotificationBadge(count) {
+            const badge = document.getElementById('notificationBadge');
+            if (count > 0) {
+                badge.textContent = count > 9 ? '9+' : count;
+                badge.classList.remove('hidden');
+            } else {
+                badge.classList.add('hidden');
+            }
+        }
+
+        function markAsRead(notificationId) {
+            fetch('../api/notifications.php', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'mark_read', notification_id: notificationId})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadNotifications();
+                }
+            });
+        }
+
+        function markAllAsRead() {
+            fetch('../api/notifications.php', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'mark_all_read'})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    loadNotifications();
+                }
+            });
+        }
+
+        function formatDate(dateString) {
+            const date = new Date(dateString);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMs / 3600000);
+            const diffDays = Math.floor(diffMs / 86400000);
+
+            if (diffMins < 1) return 'Just now';
+            if (diffMins < 60) return `${diffMins} min${diffMins > 1 ? 's' : ''} ago`;
+            if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+            if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+            return date.toLocaleDateString();
+        }
+
+        // Close notification panel when clicking outside
+        document.addEventListener('click', function(event) {
+            const panel = document.getElementById('notificationPanel');
+            const button = event.target.closest('button[onclick="toggleNotifications()"]');
+
+            if (notificationPanelOpen && !panel.contains(event.target) && !button) {
+                toggleNotifications();
+            }
+        });
+
+        // Load notifications on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadNotifications();
+            // Refresh notifications every 30 seconds
+            setInterval(loadNotifications, 30000);
+        });
     </script>
 </body>
 </html>

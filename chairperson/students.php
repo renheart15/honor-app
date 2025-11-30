@@ -227,6 +227,8 @@ if (!empty($search)) {
                             Export
                         </button>
                     </div>
+
+                    <?php include 'includes/header.php'; ?>
                 </div>
             </header>
 

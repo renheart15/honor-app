@@ -61,13 +61,36 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         $result = $academicPeriod->delete($period_id);
         $message = $result['message'];
         $message_type = $result['success'] ? 'success' : 'error';
+    } elseif ($action === 'activate_period') {
+        $period_id = $_POST['period_id'] ?? 0;
+        $start_date = $_POST['start_date'] ?? '';
+        $end_date = $_POST['end_date'] ?? '';
+
+        if ($academicPeriod->setActiveWithDates($period_id, $start_date, $end_date)) {
+            $message = 'Academic period activated successfully with updated dates!';
+            $message_type = 'success';
+        } else {
+            $message = 'Failed to activate period. Please check the dates and try again.';
+            $message_type = 'error';
+        }
     } elseif ($action === 'set_active_period') {
         $period_id = $_POST['period_id'] ?? 0;
         if ($academicPeriod->setActive($period_id)) {
-            $message = 'Active period updated successfully!';
+            $message = 'Academic period activated successfully!';
             $message_type = 'success';
         } else {
-            $message = 'Failed to set active period.';
+            $message = 'Failed to activate period.';
+            $message_type = 'error';
+        }
+    } elseif ($action === 'deactivate_period') {
+        $period_id = $_POST['period_id'] ?? 0;
+        $stmt = $db->prepare("UPDATE academic_periods SET is_active = 0, updated_at = NOW() WHERE id = :id");
+        $stmt->bindParam(':id', $period_id);
+        if ($stmt->execute()) {
+            $message = 'Academic period deactivated successfully!';
+            $message_type = 'success';
+        } else {
+            $message = 'Failed to deactivate period.';
             $message_type = 'error';
         }
     }
@@ -78,12 +101,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 // Get all academic periods
 $academic_periods = $academicPeriod->getAll();
 
-// Get current active period
-$active_period = null;
+// Get all active periods (can be multiple)
+$active_periods = [];
 foreach ($academic_periods as $period) {
     if ($period['is_active']) {
-        $active_period = $period;
-        break;
+        $active_periods[] = $period;
     }
 }
 
@@ -189,7 +211,8 @@ foreach ($academic_periods as $period) {
                             <p class="text-sm text-gray-500">Manage academic periods for applications and grade submissions</p>
                         </div>
                     </div>
-                    
+
+                    <?php include 'includes/header.php'; ?>
                 </div>
             </header>
 
@@ -223,21 +246,44 @@ foreach ($academic_periods as $period) {
                             </div>
                         </div>
                         <div class="p-6">
-                            <?php if ($active_period): ?>
+                            <?php if (!empty($active_periods)): ?>
                                 <div class="mb-6 p-4 bg-green-50 border border-green-200 rounded-xl">
-                                    <div class="flex items-center">
-                                        <i data-lucide="check-circle" class="w-5 h-5 text-green-500 mr-2"></i>
-                                        <div>
-                                            <p class="text-green-800 font-semibold">Currently Active Period</p>
-                                            <p class="text-green-700 text-sm">
-                                                <?php
-                                                    $semester_display = $active_period['semester'] === '1st' ? '1st Semester' :
-                                                                      ($active_period['semester'] === '2nd' ? '2nd Semester' :
-                                                                      ucfirst($active_period['semester']));
-                                                    echo htmlspecialchars($semester_display . ' ' . $active_period['school_year']);
-                                                ?>
-                                                (<?php echo date('M d', strtotime($active_period['start_date'])); ?> - <?php echo date('M d, Y', strtotime($active_period['end_date'])); ?>)
+                                    <div class="flex items-start">
+                                        <i data-lucide="check-circle" class="w-5 h-5 text-green-500 mr-2 mt-0.5"></i>
+                                        <div class="flex-1">
+                                            <p class="text-green-800 font-semibold">
+                                                Active Period<?php echo count($active_periods) > 1 ? 's' : ''; ?> (<?php echo count($active_periods); ?>)
                                             </p>
+                                            <div class="mt-2 space-y-2">
+                                                <?php foreach ($active_periods as $period): ?>
+                                                    <?php
+                                                        $is_expired = $academicPeriod->isExpired($period);
+                                                        $semester_display = $period['semester'] === '1st' ? '1st Semester' :
+                                                                          ($period['semester'] === '2nd' ? '2nd Semester' :
+                                                                          ucfirst($period['semester']));
+                                                    ?>
+                                                    <div class="flex items-center text-sm <?php echo $is_expired ? 'text-yellow-700' : 'text-green-700'; ?>">
+                                                        <span class="font-medium">•</span>
+                                                        <span class="ml-2">
+                                                            <?php echo htmlspecialchars($semester_display . ' ' . $period['school_year']); ?>
+                                                            (<?php echo date('M d', strtotime($period['start_date'])); ?> - <?php echo date('M d, Y', strtotime($period['end_date'])); ?>)
+                                                            <?php if ($is_expired): ?>
+                                                                <span class="text-yellow-600 font-semibold">- EXPIRED</span>
+                                                            <?php endif; ?>
+                                                        </span>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            <?php else: ?>
+                                <div class="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-xl">
+                                    <div class="flex items-center">
+                                        <i data-lucide="alert-circle" class="w-5 h-5 text-yellow-500 mr-2"></i>
+                                        <div>
+                                            <p class="text-yellow-800 font-semibold">No Active Period</p>
+                                            <p class="text-yellow-700 text-sm">Please activate at least one academic period to enable applications and grade submissions.</p>
                                         </div>
                                     </div>
                                 </div>
@@ -262,7 +308,11 @@ foreach ($academic_periods as $period) {
                                         </thead>
                                         <tbody class="bg-white divide-y divide-gray-200">
                                             <?php foreach ($academic_periods as $period): ?>
-                                                <tr class="hover:bg-gray-50">
+                                                <?php
+                                                    $period_is_expired = $academicPeriod->isExpired($period);
+                                                    $row_class = $period_is_expired ? 'hover:bg-red-50 bg-red-25' : 'hover:bg-gray-50';
+                                                ?>
+                                                <tr class="<?php echo $row_class; ?>">
                                                     <td class="px-6 py-4 whitespace-nowrap">
                                                         <div class="text-sm font-medium text-gray-900"><?php
                                                             $semester_display = $period['semester'] === '1st' ? '1st Semester' :
@@ -270,17 +320,27 @@ foreach ($academic_periods as $period) {
                                                                               ucfirst($period['semester']));
                                                             echo htmlspecialchars($semester_display . ' ' . $period['school_year']);
                                                         ?></div>
+                                                        <?php if ($period_is_expired): ?>
+                                                            <div class="text-xs text-red-600 mt-1">Expired</div>
+                                                        <?php endif; ?>
                                                     </td>
                                                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                                        <?php echo date('M d, Y', strtotime($period['start_date'])); ?> -
+                                                        <?php echo date('M d', strtotime($period['start_date'])); ?> -
                                                         <?php echo date('M d, Y', strtotime($period['end_date'])); ?>
                                                     </td>
                                                     <td class="px-6 py-4 whitespace-nowrap">
                                                         <?php if ($period['is_active']): ?>
-                                                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                                                <i data-lucide="check-circle" class="w-3 h-3 mr-1"></i>
-                                                                Active
-                                                            </span>
+                                                            <?php if ($period_is_expired): ?>
+                                                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                                                    <i data-lucide="alert-triangle" class="w-3 h-3 mr-1"></i>
+                                                                    Active (Expired)
+                                                                </span>
+                                                            <?php else: ?>
+                                                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                                                    <i data-lucide="check-circle" class="w-3 h-3 mr-1"></i>
+                                                                    Active
+                                                                </span>
+                                                            <?php endif; ?>
                                                         <?php else: ?>
                                                             <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
                                                                 <i data-lucide="circle" class="w-3 h-3 mr-1"></i>
@@ -290,8 +350,14 @@ foreach ($academic_periods as $period) {
                                                     </td>
                                                     <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
                                                         <div class="flex flex-col space-y-1 sm:flex-row sm:space-y-0 sm:space-x-2">
-                                                            <?php if (!$period['is_active']): ?>
-                                                                <button onclick="setActivePeriod(<?php echo $period['id']; ?>)"
+                                                            <?php if ($period['is_active']): ?>
+                                                                <button onclick="deactivatePeriod(<?php echo $period['id']; ?>)"
+                                                                        class="bg-orange-600 hover:bg-orange-700 text-white px-2 py-1 rounded text-xs transition-colors flex items-center justify-center">
+                                                                    <i data-lucide="pause" class="w-3 h-3 mr-1"></i>
+                                                                    Deactivate
+                                                                </button>
+                                                            <?php else: ?>
+                                                                <button onclick="showActivatePeriodModal(<?php echo htmlspecialchars(json_encode($period)); ?>)"
                                                                         class="bg-green-600 hover:bg-green-700 text-white px-2 py-1 rounded text-xs transition-colors flex items-center justify-center">
                                                                     <i data-lucide="play" class="w-3 h-3 mr-1"></i>
                                                                     Activate
@@ -339,7 +405,7 @@ foreach ($academic_periods as $period) {
                         <i data-lucide="x" class="w-5 h-5"></i>
                     </button>
                 </div>
-                <form id="periodForm" method="POST">
+                <form id="periodForm" method="POST" onsubmit="return handlePeriodFormSubmit(event)">
                     <input type="hidden" name="action" id="formAction" value="create_period">
                     <input type="hidden" name="period_id" id="periodId">
 
@@ -401,12 +467,154 @@ foreach ($academic_periods as $period) {
         </div>
     </div>
 
+    <!-- Activate Period Modal -->
+    <div id="activatePeriodModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full hidden z-50">
+        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-2xl bg-white">
+            <div class="mt-3">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-gray-900">Activate Academic Period</h3>
+                    <button onclick="hideActivatePeriodModal()" class="text-gray-400 hover:text-gray-600">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+
+                <div id="expiredWarning" class="hidden mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <div class="flex items-start">
+                        <i data-lucide="alert-triangle" class="w-5 h-5 text-yellow-600 mr-2 mt-0.5"></i>
+                        <div>
+                            <p class="text-sm font-semibold text-yellow-800">Period Expired</p>
+                            <p class="text-xs text-yellow-700 mt-1">This period has expired. Please update the dates before activating.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <form id="activatePeriodForm" method="POST" onsubmit="return handleActivateSubmit(event)">
+                    <input type="hidden" name="action" value="activate_period">
+                    <input type="hidden" name="period_id" id="activate_period_id">
+
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Academic Period</label>
+                            <div class="px-3 py-2 bg-gray-50 rounded-lg">
+                                <p id="activate_period_name" class="text-sm font-semibold text-gray-900"></p>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label for="activate_start_date" class="block text-sm font-medium text-gray-700 mb-1">Start Date</label>
+                                <input type="date" id="activate_start_date" name="start_date" required
+                                       class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                            </div>
+
+                            <div>
+                                <label for="activate_end_date" class="block text-sm font-medium text-gray-700 mb-1">End Date</label>
+                                <input type="date" id="activate_end_date" name="end_date" required
+                                       class="block w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500">
+                            </div>
+                        </div>
+
+                        <div class="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                            <p class="text-xs text-blue-800">
+                                <i data-lucide="info" class="w-4 h-4 inline mr-1"></i>
+                                You can activate multiple academic periods simultaneously.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="flex justify-end space-x-3 mt-6">
+                        <button type="button" onclick="hideActivatePeriodModal()"
+                                class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors">
+                            Cancel
+                        </button>
+                        <button type="submit" id="activateSubmitBtn"
+                                class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors flex items-center">
+                            <i data-lucide="check" class="w-4 h-4 mr-1"></i>
+                            <span id="activateButtonText">Activate Period</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <script>
         lucide.createIcons();
 
+        // Prevent double submission
+        let isSubmitting = false;
+        let isPeriodFormSubmitting = false;
+
+        function handleActivateSubmit(event) {
+            if (isSubmitting) {
+                event.preventDefault();
+                return false;
+            }
+
+            // Validate dates
+            const startDate = document.getElementById('activate_start_date').value;
+            const endDate = document.getElementById('activate_end_date').value;
+
+            if (!startDate || !endDate) {
+                alert('Please select both start and end dates');
+                return false;
+            }
+
+            if (new Date(endDate) <= new Date(startDate)) {
+                alert('End date must be after start date');
+                return false;
+            }
+
+            // Disable button and show loading state
+            isSubmitting = true;
+            const submitBtn = document.getElementById('activateSubmitBtn');
+            const buttonText = document.getElementById('activateButtonText');
+            submitBtn.disabled = true;
+            submitBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            buttonText.textContent = 'Activating...';
+
+            return true;
+        }
+
+        function handlePeriodFormSubmit(event) {
+            if (isPeriodFormSubmitting) {
+                event.preventDefault();
+                return false;
+            }
+
+            // Validate dates
+            const startDate = document.getElementById('start_date_modal').value;
+            const endDate = document.getElementById('end_date_modal').value;
+
+            if (!startDate || !endDate) {
+                alert('Please select both start and end dates');
+                return false;
+            }
+
+            if (new Date(endDate) <= new Date(startDate)) {
+                alert('End date must be after start date');
+                return false;
+            }
+
+            // Disable button and show loading state
+            isPeriodFormSubmitting = true;
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            const originalText = submitBtn.textContent;
+            submitBtn.textContent = 'Processing...';
+
+            return true;
+        }
+
+        function resetFormSubmitState() {
+            isPeriodFormSubmitting = false;
+            isSubmitting = false;
+        }
 
         // Academic Period Management Functions
         function showCreatePeriodModal() {
+            resetFormSubmitState();
             document.getElementById('modalTitle').textContent = 'Create Academic Period';
             document.getElementById('formAction').value = 'create_period';
             document.getElementById('submitBtn').textContent = 'Create Period';
@@ -416,6 +624,7 @@ foreach ($academic_periods as $period) {
         }
 
         function editPeriod(period) {
+            resetFormSubmitState();
             document.getElementById('modalTitle').textContent = 'Edit Academic Period';
             document.getElementById('formAction').value = 'update_period';
             document.getElementById('submitBtn').textContent = 'Update Period';
@@ -429,7 +638,43 @@ foreach ($academic_periods as $period) {
         }
 
         function hidePeriodModal() {
+            resetFormSubmitState();
             document.getElementById('periodModal').classList.add('hidden');
+        }
+
+        function showActivatePeriodModal(period) {
+            resetFormSubmitState();
+            // Set period info
+            const semesterDisplay = period.semester === '1st' ? '1st Semester' :
+                                  (period.semester === '2nd' ? '2nd Semester' : period.semester);
+            document.getElementById('activate_period_name').textContent = semesterDisplay + ' ' + period.school_year;
+            document.getElementById('activate_period_id').value = period.id;
+
+            // Set current dates
+            document.getElementById('activate_start_date').value = period.start_date;
+            document.getElementById('activate_end_date').value = period.end_date;
+
+            // Check if period is expired
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const endDate = new Date(period.end_date);
+            endDate.setHours(0, 0, 0, 0);
+
+            const expiredWarning = document.getElementById('expiredWarning');
+            if (endDate < today) {
+                expiredWarning.classList.remove('hidden');
+            } else {
+                expiredWarning.classList.add('hidden');
+            }
+
+            // Show modal
+            document.getElementById('activatePeriodModal').classList.remove('hidden');
+            lucide.createIcons();
+        }
+
+        function hideActivatePeriodModal() {
+            resetFormSubmitState();
+            document.getElementById('activatePeriodModal').classList.add('hidden');
         }
 
         function setActivePeriod(periodId) {
@@ -438,6 +683,19 @@ foreach ($academic_periods as $period) {
                 form.method = 'POST';
                 form.innerHTML = `
                     <input type="hidden" name="action" value="set_active_period">
+                    <input type="hidden" name="period_id" value="${periodId}">
+                `;
+                document.body.appendChild(form);
+                form.submit();
+            }
+        }
+
+        function deactivatePeriod(periodId) {
+            if (confirm('Are you sure you want to deactivate this academic period?')) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.innerHTML = `
+                    <input type="hidden" name="action" value="deactivate_period">
                     <input type="hidden" name="period_id" value="${periodId}">
                 `;
                 document.body.appendChild(form);
@@ -462,6 +720,12 @@ foreach ($academic_periods as $period) {
         document.getElementById('periodModal').addEventListener('click', function(e) {
             if (e.target === this) {
                 hidePeriodModal();
+            }
+        });
+
+        document.getElementById('activatePeriodModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                hideActivatePeriodModal();
             }
         });
     </script>

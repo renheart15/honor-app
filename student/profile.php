@@ -153,6 +153,8 @@ function getOrdinalSuffix($number) {
                             <p class="text-sm text-gray-500">Manage your account information and preferences</p>
                         </div>
                     </div>
+
+                    <?php include 'includes/header.php'; ?>
                 </div>
             </header>
 

@@ -17,23 +17,60 @@ $message_type = '';
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['grade_file'])) {
     $user_id = $_SESSION['user_id'];
-    $academic_period_id = 1; // Current period
-    
+
+    // Get active academic period (any active period)
+    $period_query = "SELECT id FROM academic_periods WHERE is_active = 1 ORDER BY id DESC LIMIT 1";
+    $period_stmt = $db->prepare($period_query);
+    $period_stmt->execute();
+    $active_period = $period_stmt->fetch(PDO::FETCH_ASSOC);
+    $academic_period_id = $active_period['id'] ?? 1;
+
     $result = $gradeProcessor->uploadGradeFile($user_id, $academic_period_id, $_FILES['grade_file']);
-    
+
     if ($result['success']) {
         $message = $result['message'];
         $message_type = 'success';
-        
-        // Create notification
+
+        // Create notification for student
         $notificationManager->createNotification(
             $user_id,
             'Grade File Uploaded',
-            'Your grade file has been uploaded and is being processed.',
+            'Your grade file has been uploaded and is pending adviser approval.',
             'success',
             'grade_upload'
         );
-        
+
+        // Notify adviser about the submission
+        // Get student info
+        $student_query = "SELECT first_name, last_name, section, year_level FROM users WHERE id = :user_id";
+        $student_stmt = $db->prepare($student_query);
+        $student_stmt->bindParam(':user_id', $user_id);
+        $student_stmt->execute();
+        $student_info = $student_stmt->fetch(PDO::FETCH_ASSOC);
+
+        $student_name = $student_info['first_name'] . ' ' . $student_info['last_name'];
+        $student_section = $student_info['section'];
+        $student_year = $student_info['year_level'];
+
+        // Find the adviser for this student's section
+        $section_identifier = $student_section . '-' . $student_year;
+        $adviser_query = "SELECT id FROM users
+                          WHERE role = 'adviser'
+                          AND (section LIKE :section1 OR section LIKE :section2)
+                          AND status = 'active'
+                          LIMIT 1";
+        $adviser_stmt = $db->prepare($adviser_query);
+        $section_param1 = '%"' . $section_identifier . '"%';
+        $section_param2 = '%' . $section_identifier . '%';
+        $adviser_stmt->bindParam(':section1', $section_param1);
+        $adviser_stmt->bindParam(':section2', $section_param2);
+        $adviser_stmt->execute();
+        $adviser = $adviser_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($adviser) {
+            $notificationManager->notifyAdviserGradeSubmission($adviser['id'], $student_name, $result['submission_id'] ?? 0);
+        }
+
         // Redirect to prevent resubmission
         header("Location: upload-grades.php?success=1");
         exit();
@@ -142,11 +179,15 @@ if (isset($_GET['success']) && $_GET['success'] == '1') {
                             <p class="text-sm text-gray-500">Upload your official grade report for GWA computation</p>
                         </div>
                     </div>
-                    
-                    <a href="dashboard.php" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm font-medium transition-colors flex items-center">
-                        <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>
-                        Back to Dashboard
-                    </a>
+
+                    <div class="flex items-center space-x-4">
+                        <a href="dashboard.php" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-xl text-sm font-medium transition-colors flex items-center">
+                            <i data-lucide="arrow-left" class="w-4 h-4 mr-2"></i>
+                            Back to Dashboard
+                        </a>
+
+                        <?php include 'includes/header.php'; ?>
+                    </div>
                 </div>
             </header>
 

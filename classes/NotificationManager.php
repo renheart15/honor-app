@@ -94,7 +94,7 @@ class NotificationManager {
     }
 
     public function deleteNotification($notification_id, $user_id) {
-        $query = "DELETE FROM " . $this->table_name . " 
+        $query = "DELETE FROM " . $this->table_name . "
                   WHERE id = :id AND user_id = :user_id";
 
         $stmt = $this->conn->prepare($query);
@@ -109,10 +109,25 @@ class NotificationManager {
         }
     }
 
+    public function deleteAllNotifications($user_id) {
+        $query = "DELETE FROM " . $this->table_name . "
+                  WHERE user_id = :user_id";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":user_id", $user_id);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Delete all notifications error: " . $e->getMessage());
+            return false;
+        }
+    }
+
     public function sendSystemNotification($title, $message, $type = 'system') {
         // Send notification to all active users
         $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
-                  SELECT id, :title, :message, :type, 'system' 
+                  SELECT id, :title, :message, :type, 'system'
                   FROM users WHERE status = 'active'";
 
         $stmt = $this->conn->prepare($query);
@@ -124,6 +139,120 @@ class NotificationManager {
             return $stmt->execute();
         } catch (PDOException $e) {
             error_log("System notification error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // Student Notifications
+    public function notifyGradeProcessed($user_id, $status, $rejection_reason = null) {
+        if ($status === 'processed') {
+            $title = "Grade Report Approved";
+            $message = "Your grade report has been approved and processed successfully.";
+            $type = 'success';
+        } else {
+            $title = "Grade Report Rejected";
+            $message = "Your grade report was rejected. Reason: " . ($rejection_reason ?? 'Not specified');
+            $type = 'error';
+        }
+        return $this->createNotification($user_id, $title, $message, $type, 'grades');
+    }
+
+    public function notifyApplicationStatus($user_id, $status, $application_type) {
+        $type_label = ucfirst(str_replace('_', ' ', $application_type));
+
+        if ($status === 'approved') {
+            $title = "Application Approved";
+            $message = "Your {$type_label} application has been approved!";
+            $type = 'success';
+        } else {
+            $title = "Application Rejected";
+            $message = "Your {$type_label} application was rejected.";
+            $type = 'error';
+        }
+        return $this->createNotification($user_id, $title, $message, $type, 'application');
+    }
+
+    public function notifyAcademicPeriodOpened($semester, $school_year, $end_date) {
+        $title = "Academic Period Opened";
+        $message = "New academic period is now open: {$semester} Semester SY {$school_year}. Deadline: " . date('M d, Y', strtotime($end_date));
+
+        // Notify all students
+        $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
+                  SELECT id, :title, :message, 'info', 'academic_period'
+                  FROM users WHERE role = 'student' AND status = 'active'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":title", $title);
+        $stmt->bindParam(":message", $message);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Academic period notification error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function notifyAcademicPeriodExpired($semester, $school_year) {
+        $title = "Academic Period Expired";
+        $message = "The academic period {$semester} Semester SY {$school_year} has expired.";
+
+        // Notify all students
+        $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
+                  SELECT id, :title, :message, 'warning', 'academic_period'
+                  FROM users WHERE role = 'student' AND status = 'active'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":title", $title);
+        $stmt->bindParam(":message", $message);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Academic period expiry notification error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    // Adviser Notifications
+    public function notifyAdviserGradeSubmission($adviser_id, $student_name, $submission_id) {
+        $title = "New Grade Submission";
+        $message = "{$student_name} has submitted their grade report for review.";
+        return $this->createNotification($adviser_id, $title, $message, 'info', 'grade_submission');
+    }
+
+    public function notifyAdviserApplicationSubmission($adviser_id, $student_name, $application_type) {
+        $type_label = ucfirst(str_replace('_', ' ', $application_type));
+        $title = "New Application Submission";
+        $message = "{$student_name} has submitted a {$type_label} application for review.";
+        return $this->createNotification($adviser_id, $title, $message, 'info', 'application_submission');
+    }
+
+    public function notifyAdviserAcademicPeriod($semester, $school_year, $end_date, $is_expired = false) {
+        if ($is_expired) {
+            $title = "Academic Period Expired";
+            $message = "The academic period {$semester} Semester SY {$school_year} has expired.";
+            $type = 'warning';
+        } else {
+            $title = "Academic Period Opened";
+            $message = "New academic period is now open: {$semester} Semester SY {$school_year}. Deadline: " . date('M d, Y', strtotime($end_date));
+            $type = 'info';
+        }
+
+        // Notify all advisers
+        $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
+                  SELECT id, :title, :message, :type, 'academic_period'
+                  FROM users WHERE role = 'adviser' AND status = 'active'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":title", $title);
+        $stmt->bindParam(":message", $message);
+        $stmt->bindParam(":type", $type);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Adviser academic period notification error: " . $e->getMessage());
             return false;
         }
     }

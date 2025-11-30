@@ -8,6 +8,9 @@ class AcademicPeriod {
     }
 
     public function getAll() {
+        // Auto-deactivate any expired active periods
+        $this->deactivateExpiredPeriods();
+
         $stmt = $this->conn->query("SELECT * FROM academic_periods ORDER BY school_year DESC, semester DESC");
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -20,18 +23,34 @@ class AcademicPeriod {
     }
 
     public function getActivePeriod() {
+        // First, auto-deactivate any expired active periods
+        $this->deactivateExpiredPeriods();
+
         $stmt = $this->conn->prepare("SELECT * FROM academic_periods WHERE is_active = 1 LIMIT 1");
         $stmt->execute();
         return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
+    public function deactivateExpiredPeriods() {
+        try {
+            // Deactivate any periods where end_date is before today
+            $stmt = $this->conn->prepare("UPDATE academic_periods SET is_active = 0 WHERE is_active = 1 AND end_date < CURDATE()");
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log('Failed to deactivate expired periods: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function isExpired($period) {
+        if (!$period || !isset($period['end_date'])) {
+            return false;
+        }
+        return strtotime($period['end_date']) < strtotime('today');
+    }
+
     public function create($data) {
         try {
-            // Deactivate all other periods if this one is set as active
-            if ($data['is_active']) {
-                $this->conn->exec("UPDATE academic_periods SET is_active = 0");
-            }
-
             // Generate period name from semester and school year
             $semester_display = $data['semester'] === '1st' ? 'First Semester' :
                               ($data['semester'] === '2nd' ? 'Second Semester' : 'Summer');
@@ -64,11 +83,6 @@ class AcademicPeriod {
 
     public function update($id, $data) {
         try {
-            // Deactivate all other periods if this one is set as active
-            if ($data['is_active']) {
-                $this->conn->exec("UPDATE academic_periods SET is_active = 0");
-            }
-
             // Generate period name from semester and school year
             $semester_display = $data['semester'] === '1st' ? 'First Semester' :
                               ($data['semester'] === '2nd' ? 'Second Semester' : 'Summer');
@@ -96,6 +110,7 @@ class AcademicPeriod {
                 ':is_active' => $data['is_active'] ? 1 : 0
             ]);
         } catch (PDOException $e) {
+            error_log('AcademicPeriod update exception: ' . $e->getMessage());
             return false;
         }
     }
@@ -128,15 +143,79 @@ class AcademicPeriod {
 
     public function setActive($id) {
         try {
-            // Deactivate all periods
-            $this->conn->exec("UPDATE academic_periods SET is_active = 0");
-
-            // Activate the selected period
-            $stmt = $this->conn->prepare("UPDATE academic_periods SET is_active = 1 WHERE id = :id");
+            // Simply activate the selected period (allow multiple active periods)
+            $stmt = $this->conn->prepare("UPDATE academic_periods SET is_active = 1, updated_at = NOW() WHERE id = :id");
             $stmt->bindParam(':id', $id);
             return $stmt->execute();
         } catch (PDOException $e) {
+            error_log('AcademicPeriod setActive exception: ' . $e->getMessage());
             return false;
+        }
+    }
+
+    public function setActiveWithDates($id, $start_date, $end_date) {
+        try {
+            // Validate dates
+            if (empty($start_date) || empty($end_date)) {
+                error_log('AcademicPeriod setActiveWithDates: Missing dates');
+                return false;
+            }
+
+            // Validate end date is after start date
+            if (strtotime($end_date) <= strtotime($start_date)) {
+                error_log('AcademicPeriod setActiveWithDates: End date must be after start date');
+                return false;
+            }
+
+            // Update and activate the selected period with new dates (allow multiple active periods)
+            $stmt = $this->conn->prepare("
+                UPDATE academic_periods
+                SET is_active = 1,
+                    start_date = :start_date,
+                    end_date = :end_date,
+                    updated_at = NOW()
+                WHERE id = :id
+            ");
+            $stmt->bindParam(':id', $id);
+            $stmt->bindParam(':start_date', $start_date);
+            $stmt->bindParam(':end_date', $end_date);
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log('AcademicPeriod setActiveWithDates exception: ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Ensures only one active period exists at most
+     * If multiple active periods found, deactivates all of them
+     * @return array Status and message
+     */
+    public function enforceOneActivePeriod() {
+        try {
+            $stmt = $this->conn->query("SELECT id, semester, school_year FROM academic_periods WHERE is_active = 1");
+            $activePeriods = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $count = count($activePeriods);
+
+            if ($count === 0) {
+                return ['success' => true, 'message' => 'No active period found', 'count' => 0];
+            } elseif ($count === 1) {
+                return ['success' => true, 'message' => 'Single active period verified', 'count' => 1];
+            } else {
+                // Multiple active periods detected - deactivate all
+                $this->conn->exec("UPDATE academic_periods SET is_active = 0");
+                error_log("Multiple active periods detected and deactivated: " . json_encode($activePeriods));
+                return [
+                    'success' => false,
+                    'message' => "Multiple active periods detected and deactivated. Please manually activate the correct period.",
+                    'count' => $count,
+                    'periods' => $activePeriods
+                ];
+            }
+        } catch (PDOException $e) {
+            error_log('enforceOneActivePeriod exception: ' . $e->getMessage());
+            return ['success' => false, 'message' => 'Database error: ' . $e->getMessage()];
         }
     }
 }

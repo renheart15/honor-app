@@ -353,6 +353,8 @@ if ($selected_period_id) {
                             <?php endif; ?>
                         </p>
                     </div>
+
+                    <?php include 'includes/header.php'; ?>
                 </div>
             </div>
         </header>

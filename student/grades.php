@@ -236,10 +236,14 @@ uksort($grades_by_semester, function($a, $b) {
                         </div>
                     </div>
 
-                    <a href="upload-grades.php" class="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors flex items-center">
-                        <i data-lucide="upload" class="w-4 h-4 mr-2"></i>
-                        Upload Grades
-                    </a>
+                    <div class="flex items-center space-x-4">
+                        <a href="upload-grades.php" class="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors flex items-center">
+                            <i data-lucide="upload" class="w-4 h-4 mr-2"></i>
+                            Upload Grades
+                        </a>
+
+                        <?php include 'includes/header.php'; ?>
+                    </div>
                 </div>
             </header>
 

@@ -12,6 +12,7 @@ $database = new Database();
 $db = $database->getConnection();
 $gradeProcessor = new GradeProcessor($db);
 $gradeExtractor = new GradeExtractor();
+$notificationManager = new NotificationManager($db);
 
 $adviser_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
@@ -118,6 +119,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     if ($stmt->execute()) {
                         // Calculate GWA
                         $gradeProcessor->calculateGWA($submission_id);
+
+                        // Notify student about approval
+                        $notificationManager->notifyGradeProcessed($submission_data['user_id'], 'processed');
+
                         $message = "Submission approved successfully! Extracted {$grades_inserted} grades and calculated GWA.";
                         $message_type = 'success';
                     } else {
@@ -129,16 +134,26 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         }
     } elseif ($action === 'reject') {
         $rejection_reason = $_POST['rejection_reason'] ?? '';
-        
-        $query = "UPDATE grade_submissions 
-                  SET status = 'rejected', processed_at = NOW(), processed_by = :adviser_id, rejection_reason = :reason 
+
+        // Get submission user_id first
+        $sub_query = "SELECT user_id FROM grade_submissions WHERE id = :submission_id";
+        $sub_stmt = $db->prepare($sub_query);
+        $sub_stmt->bindParam(':submission_id', $submission_id);
+        $sub_stmt->execute();
+        $submission_data = $sub_stmt->fetch(PDO::FETCH_ASSOC);
+
+        $query = "UPDATE grade_submissions
+                  SET status = 'rejected', processed_at = NOW(), processed_by = :adviser_id, rejection_reason = :reason
                   WHERE id = :submission_id";
         $stmt = $db->prepare($query);
         $stmt->bindParam(':adviser_id', $adviser_id);
         $stmt->bindParam(':submission_id', $submission_id);
         $stmt->bindParam(':reason', $rejection_reason);
-        
-        if ($stmt->execute()) {
+
+        if ($stmt->execute() && $submission_data) {
+            // Notify student about rejection
+            $notificationManager->notifyGradeProcessed($submission_data['user_id'], 'rejected', $rejection_reason);
+
             $message = 'Submission rejected successfully!';
             $message_type = 'success';
         } else {
@@ -158,39 +173,63 @@ $current_academic_period_id = $current_period['id'] ?? 1;
 // Get submissions for adviser's assigned sections (current academic period only)
 if (!empty($adviser_sections)) {
     // Build flexible section matching conditions
+    // Adviser sections are like "C-4" which means section C, year level 4
     $section_conditions = [];
     $params = [$department];
 
     foreach ($adviser_sections as $assigned_section) {
-        // Try exact match and partial matches
-        $section_conditions[] = "u.section = ?";
-        $params[] = $assigned_section;
-
-        // If section is like "C-4", also try "C" and "4"
+        // Parse section-year format (e.g., "C-4" means section C, year 4)
         if (strpos($assigned_section, '-') !== false) {
             $parts = explode('-', $assigned_section);
-            foreach ($parts as $part) {
-                $section_conditions[] = "u.section = ?";
-                $params[] = trim($part);
-            }
-        }
+            $section_letter = trim($parts[0]);
+            $year_level = isset($parts[1]) ? trim($parts[1]) : null;
 
-        // Also try partial matches using LIKE
-        $section_conditions[] = "u.section LIKE ?";
-        $params[] = '%' . $assigned_section . '%';
+            if ($year_level) {
+                // Match both section AND year level
+                $section_conditions[] = "(u.section = ? AND u.year_level = ?)";
+                $params[] = $section_letter;
+                $params[] = $year_level;
+            } else {
+                // Just match section
+                $section_conditions[] = "u.section = ?";
+                $params[] = $section_letter;
+            }
+        } else {
+            // No dash, just match section exactly
+            $section_conditions[] = "u.section = ?";
+            $params[] = $assigned_section;
+        }
     }
 
     $section_where = '(' . implode(' OR ', $section_conditions) . ')';
 
+    // Get all active academic periods to show all submissions
+    $active_periods_query = "SELECT id FROM academic_periods WHERE is_active = 1";
+    $active_periods_stmt = $db->prepare($active_periods_query);
+    $active_periods_stmt->execute();
+    $active_periods = $active_periods_stmt->fetchAll(PDO::FETCH_COLUMN);
+
+    if (empty($active_periods)) {
+        // Fallback to current_academic_period_id if no active periods
+        $active_periods = [$current_academic_period_id];
+    }
+
+    $period_placeholders = implode(',', array_fill(0, count($active_periods), '?'));
+
     $query = "SELECT gs.*, u.first_name, u.last_name, u.student_id, u.section, u.year_level,
-                     processor.first_name as processor_first_name, processor.last_name as processor_last_name
+                     processor.first_name as processor_first_name, processor.last_name as processor_last_name,
+                     ap.semester, ap.school_year
               FROM grade_submissions gs
               JOIN users u ON gs.user_id = u.id
               LEFT JOIN users processor ON gs.processed_by = processor.id
-              WHERE u.department = ? AND $section_where AND gs.academic_period_id = ?
+              LEFT JOIN academic_periods ap ON gs.academic_period_id = ap.id
+              WHERE u.department = ? AND $section_where AND gs.academic_period_id IN ($period_placeholders)
               ORDER BY gs.upload_date DESC";
 
-    $params[] = $current_academic_period_id;
+    foreach ($active_periods as $period_id) {
+        $params[] = $period_id;
+    }
+
     $stmt = $db->prepare($query);
     $stmt->execute($params);
     $submissions = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -418,6 +457,8 @@ function getStatusBadgeClass($status) {
                             <option value="rejected" <?php echo $filter === 'rejected' ? 'selected' : ''; ?>>Rejected</option>
                         </select>
                     </div>
+
+                    <?php include 'includes/header.php'; ?>
                 </div>
             </header>
 

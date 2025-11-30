@@ -293,6 +293,16 @@ $html = '
             font-size: 11pt;
             line-height: 1.3;
         }
+        .footer-logos {
+            margin-top: 30pt;
+            text-align: center;
+            padding-top: 20pt;
+            border-top: 1px solid #ccc;
+        }
+        .footer-logos img {
+            max-width: 100%;
+            height: auto;
+        }
     </style>
 </head>
 <body>
@@ -308,7 +318,7 @@ $html = '
                 <p style="font-size: 11pt; font-weight: bold;">TUBURAN CAMPUS</p>
                 <p style="font-size: 10pt;">Brgy 8, Poblacion Tuburan, Cebu, Philippines</p>
                 <p style="font-size: 8pt;">Website: <span style="text-decoration: underline; color: blue;">http://www.ctu.edu.ph</span> E-mail: <span style="text-decoration: underline; color: blue;">tuburan.campus@ctu.edu.ph</span></p>
-                <p style="font-size: 9pt;">Phone: +6332 463 9313 loc. 1512</p>
+                <p style="font-size: 9pt;">Phone: +6332 463 9313 loc. 1523</p>
             </td>
             <td class="logo-right">
                 <img src="' . realpath(__DIR__ . '/../img/Bagong-Pilipinas-Logo-1536x1444.png') . '" width="95" height="90" />
@@ -392,7 +402,7 @@ $html .= '
 
     <!-- FOOTER -->
     <div class="footer-section">
-        <p style="margin: 0; padding: 0;">Consolidated by:</p>
+        <p style="margin: 0; padding: 0;">Prepared by:</p>
         <br/>
         <p style="font-weight: bold; margin: 0; padding: 0;">' . htmlspecialchars($chairperson_name) . '</p>
         <p style="margin: 0; padding: 0;">Chairperson, ' . htmlspecialchars($department_abbr) . '</p>
@@ -406,9 +416,15 @@ $mpdf = new Mpdf([
     'margin_left' => 25.4,    // 1 inch = 25.4mm
     'margin_right' => 25.4,
     'margin_top' => 12.7,     // ~0.5 inch
-    'margin_bottom' => 25.4,
+    'margin_bottom' => 35,    // Increased to accommodate footer logos
     'tempDir' => __DIR__ . '/../tmp'
 ]);
+
+// Set footer HTML with logos
+$footer_html = '<div style="text-align: center; padding-top: 10px; border-top: 1px solid #ccc;">
+    <img src="' . realpath(__DIR__ . '/../img/footer-logos.png') . '" style="max-width: 100%; height: auto;" />
+</div>';
+$mpdf->SetHTMLFooter($footer_html);
 
 // Write HTML content
 $mpdf->WriteHTML($html);

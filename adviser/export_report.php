@@ -195,6 +195,29 @@ $section = $phpWord->addSection([
     'marginBottom' => 1440  // 1 inch
 ]);
 
+// Add footer with logos to the section
+$footer = $section->addFooter();
+
+$footerLogoPath = realpath(__DIR__ . '/../img/footer-logos.png');
+if ($footerLogoPath && file_exists($footerLogoPath)) {
+    // Get image dimensions
+    list($width, $height) = getimagesize($footerLogoPath);
+    // Calculate proportional width in points (keeping aspect ratio)
+    // Targeting around 500 points width
+    $targetWidth = 500;
+    $proportionalHeight = ($height / $width) * $targetWidth;
+
+    // Use a centered paragraph to display the image
+    $footerParagraph = $footer->addTextRun(['alignment' => Jc::CENTER, 'spaceAfter' => 0]);
+    $footerParagraph->addImage(
+        $footerLogoPath,
+        [
+            'width' => $targetWidth,
+            'height' => $proportionalHeight
+        ]
+    );
+}
+
 // --- HEADER WITH LOGOS AND TEXT (CENTERED BETWEEN LOGOS) ---
 
 // Create a table with 3 columns: left (CTU logo), middle (text), right (Bagong Pilipinas logo)
@@ -241,7 +264,7 @@ $websiteRun->addText('tuburan.campus@ctu.edu.ph', [
 
 // Phone line
 $middleCell->addText(
-    'Phone: +6332 463 9313 loc. 1512',
+    'Phone: +6332 463 9313 loc. 1523',
     ['size' => 9, 'name' => 'Arial'],
     $noSpace
 );
@@ -416,7 +439,7 @@ foreach ($students as $index => $student) {
 // Add footer
 $section->addTextBreak(1);
 $section->addText(
-    'Consolidated by:',
+    'Prepared by:',
     ['size' => 11, 'name' => 'Arial'],
     ['alignment' => Jc::START, 'spaceAfter' => 0]
 );

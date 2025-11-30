@@ -87,9 +87,17 @@ class GradeProcessor {
             }
 
             if (move_uploaded_file($file['tmp_name'], $target_path)) {
+                // Reset status to pending and clear processed data when resubmitting
                 $stmt = $this->conn->prepare("
                     UPDATE grade_submissions
-                    SET file_path = :file_path, file_name = :file_name, file_size = :file_size, uploaded_at = NOW()
+                    SET file_path = :file_path,
+                        file_name = :file_name,
+                        file_size = :file_size,
+                        upload_date = NOW(),
+                        status = 'pending',
+                        processed_at = NULL,
+                        processed_by = NULL,
+                        rejection_reason = NULL
                     WHERE id = :id
                 ");
 
@@ -102,7 +110,11 @@ class GradeProcessor {
                     ':id' => $existingSubmission['id'],
                 ]);
 
-                return ['success' => true, 'message' => 'Existing grade report updated successfully.'];
+                // Delete old grades from the grades table for this submission
+                $deleteGrades = $this->conn->prepare("DELETE FROM grades WHERE submission_id = :id");
+                $deleteGrades->execute([':id' => $existingSubmission['id']]);
+
+                return ['success' => true, 'message' => 'Grade report resubmitted successfully. Status reset to pending for review.'];
             }
 
             return ['success' => false, 'message' => 'Failed to move uploaded file.'];

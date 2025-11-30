@@ -103,13 +103,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
                     $message = 'Invalid academic period. Please contact administrator.';
                     $message_type = 'error';
                 } else {
-                    // Insert the application
-                    $insert_query = "INSERT INTO honor_applications
-                                   (user_id, academic_period_id, gwa_calculation_id, application_type, gwa_achieved, required_gwa, status)
-                                   VALUES (:user_id, :academic_period_id, :gwa_calculation_id, :application_type, :gwa_achieved, :required_gwa, 'submitted')";
-                    $insert_stmt = $db->prepare($insert_query);
+                    // Check eligibility and build ineligibility reasons
+                    $ineligibility_reasons = [];
+                    $is_eligible = true;
 
-                    // Set required GWA based on application type
+                    // Check GWA requirement based on application type
                     $required_gwa_map = [
                         'deans_list' => 1.75,
                         'cum_laude' => 1.75,
@@ -118,8 +116,62 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
                     ];
                     $required_gwa = $required_gwa_map[$application_type] ?? 1.75;
 
-                    // Create or get GWA calculation record
                     $gwa_achieved = $gwa_data_for_submission['gwa'];
+
+                    if ($gwa_achieved > $required_gwa) {
+                        $is_eligible = false;
+                        $ineligibility_reasons[] = "GWA of " . formatGWA($gwa_achieved) . " exceeds required " . formatGWA($required_gwa);
+                    }
+
+                    // Check for grades above 2.5
+                    $grade_check_query = "SELECT COUNT(*) as count FROM grades g
+                                          JOIN grade_submissions gs ON g.submission_id = gs.id
+                                          WHERE gs.user_id = :user_id
+                                          AND g.grade > 2.5
+                                          AND gs.status = 'processed'";
+                    $grade_check_stmt = $db->prepare($grade_check_query);
+                    $grade_check_stmt->bindParam(':user_id', $user_id);
+                    $grade_check_stmt->execute();
+                    $grade_check = $grade_check_stmt->fetch(PDO::FETCH_ASSOC);
+
+                    if ($grade_check['count'] > 0) {
+                        $is_eligible = false;
+                        $ineligibility_reasons[] = "Has " . $grade_check['count'] . " grade(s) above 2.5";
+                    }
+
+                    // Check Latin Honors specific requirements
+                    if (in_array($application_type, ['cum_laude', 'magna_cum_laude', 'summa_cum_laude'])) {
+                        if ($total_semesters < 8) {
+                            $is_eligible = false;
+                            $ineligibility_reasons[] = "Only completed " . $total_semesters . " semesters (requires 8)";
+                        }
+
+                        // Check for ongoing grades
+                        $ongoing_check_query = "SELECT COUNT(*) as count FROM grades g
+                                               JOIN grade_submissions gs ON g.submission_id = gs.id
+                                               WHERE gs.user_id = :user_id
+                                               AND g.grade = 0.00
+                                               AND gs.status = 'processed'";
+                        $ongoing_check_stmt = $db->prepare($ongoing_check_query);
+                        $ongoing_check_stmt->bindParam(':user_id', $user_id);
+                        $ongoing_check_stmt->execute();
+                        $ongoing_check = $ongoing_check_stmt->fetch(PDO::FETCH_ASSOC);
+
+                        if ($ongoing_check['count'] > 0) {
+                            $is_eligible = false;
+                            $ineligibility_reasons[] = "Has " . $ongoing_check['count'] . " ongoing grade(s) (0.00)";
+                        }
+                    }
+
+                    // Insert the application (allow even if not eligible)
+                    $ineligibility_details = !empty($ineligibility_reasons) ? implode("; ", $ineligibility_reasons) : null;
+
+                    $insert_query = "INSERT INTO honor_applications
+                                   (user_id, academic_period_id, gwa_calculation_id, application_type, gwa_achieved, required_gwa, status, is_eligible, ineligibility_reasons)
+                                   VALUES (:user_id, :academic_period_id, :gwa_calculation_id, :application_type, :gwa_achieved, :required_gwa, 'submitted', :is_eligible, :ineligibility_reasons)";
+                    $insert_stmt = $db->prepare($insert_query);
+
+                    // Create or get GWA calculation record
 
                     // Check if a GWA calculation record exists for this user and period
                     $check_gwa_query = "SELECT id FROM gwa_calculations WHERE user_id = :user_id AND academic_period_id = :academic_period_id";
@@ -182,15 +234,90 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
                     // Only proceed with application submission if we have a valid GWA calculation ID
                     if ($gwa_calculation_id) {
 
-                    $insert_stmt->bindParam(':user_id', $user_id);
-                    $insert_stmt->bindParam(':academic_period_id', $current_period);
-                    $insert_stmt->bindParam(':gwa_calculation_id', $gwa_calculation_id);
-                    $insert_stmt->bindParam(':application_type', $application_type);
-                    $insert_stmt->bindParam(':gwa_achieved', $gwa_achieved);
-                    $insert_stmt->bindParam(':required_gwa', $required_gwa);
+                    // Check if application already exists for this user, period, and type
+                    $check_existing_query = "SELECT id FROM honor_applications
+                                            WHERE user_id = :user_id
+                                            AND academic_period_id = :academic_period_id
+                                            AND application_type = :application_type";
+                    $check_existing_stmt = $db->prepare($check_existing_query);
+                    $check_existing_stmt->bindParam(':user_id', $user_id);
+                    $check_existing_stmt->bindParam(':academic_period_id', $current_period);
+                    $check_existing_stmt->bindParam(':application_type', $application_type);
+                    $check_existing_stmt->execute();
+                    $existing_app = $check_existing_stmt->fetch(PDO::FETCH_ASSOC);
 
-                        if ($insert_stmt->execute()) {
-                            $message = 'Honor application submitted successfully!';
+                    if ($existing_app) {
+                        // Update existing application instead of inserting
+                        $update_query = "UPDATE honor_applications
+                                        SET gwa_calculation_id = :gwa_calculation_id,
+                                            gwa_achieved = :gwa_achieved,
+                                            required_gwa = :required_gwa,
+                                            is_eligible = :is_eligible,
+                                            ineligibility_reasons = :ineligibility_reasons,
+                                            submitted_at = NOW(),
+                                            status = 'submitted'
+                                        WHERE id = :id";
+                        $update_stmt = $db->prepare($update_query);
+                        $update_stmt->bindParam(':id', $existing_app['id']);
+                        $update_stmt->bindParam(':gwa_calculation_id', $gwa_calculation_id);
+                        $update_stmt->bindParam(':gwa_achieved', $gwa_achieved);
+                        $update_stmt->bindParam(':required_gwa', $required_gwa);
+                        $update_stmt->bindParam(':is_eligible', $is_eligible, PDO::PARAM_BOOL);
+                        $update_stmt->bindParam(':ineligibility_reasons', $ineligibility_details);
+
+                        $execution_result = $update_stmt->execute();
+                    } else {
+                        // Insert new application
+                        $insert_stmt->bindParam(':user_id', $user_id);
+                        $insert_stmt->bindParam(':academic_period_id', $current_period);
+                        $insert_stmt->bindParam(':gwa_calculation_id', $gwa_calculation_id);
+                        $insert_stmt->bindParam(':application_type', $application_type);
+                        $insert_stmt->bindParam(':gwa_achieved', $gwa_achieved);
+                        $insert_stmt->bindParam(':required_gwa', $required_gwa);
+                        $insert_stmt->bindParam(':is_eligible', $is_eligible, PDO::PARAM_BOOL);
+                        $insert_stmt->bindParam(':ineligibility_reasons', $ineligibility_details);
+
+                        $execution_result = $insert_stmt->execute();
+                    }
+
+                        if ($execution_result) {
+                            // Notify adviser if student is not eligible
+                            if (!$is_eligible) {
+                                // Get student's adviser
+                                $adviser_query = "SELECT id FROM users WHERE role = 'adviser' AND department = :department AND status = 'active' LIMIT 1";
+                                $adviser_stmt = $db->prepare($adviser_query);
+                                $adviser_stmt->bindParam(':department', $_SESSION['department']);
+                                $adviser_stmt->execute();
+                                $adviser = $adviser_stmt->fetch(PDO::FETCH_ASSOC);
+
+                                if ($adviser) {
+                                    require_once '../classes/NotificationManager.php';
+                                    $notificationManager = new NotificationManager($db);
+
+                                    $student_name = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
+                                    $type_labels = [
+                                        'deans_list' => "Dean's List",
+                                        'cum_laude' => 'Cum Laude',
+                                        'magna_cum_laude' => 'Magna Cum Laude',
+                                        'summa_cum_laude' => 'Summa Cum Laude'
+                                    ];
+                                    $honor_type = $type_labels[$application_type] ?? $application_type;
+
+                                    $notification_title = "Ineligible Application Submitted";
+                                    $notification_message = "$student_name submitted an application for $honor_type but is NOT ELIGIBLE. Reasons: " . $ineligibility_details;
+
+                                    $notificationManager->createNotification(
+                                        $adviser['id'],
+                                        $notification_title,
+                                        $notification_message,
+                                        'warning',
+                                        'application'
+                                    );
+                                }
+                            }
+
+                            $action = $existing_app ? 'updated' : 'submitted';
+                            $message = 'Honor application ' . $action . ' successfully!' . ($is_eligible ? '' : ' Note: Your application does not meet eligibility requirements. Your adviser has been notified.');
                             $message_type = 'success';
                         } else {
                             $message = 'Failed to submit application. Please try again.';
@@ -677,6 +804,8 @@ if ($gwa_data) {
                             <p class="text-sm text-gray-500">Submit your application here</p>
                         </div>
                     </div>
+
+                    <?php include 'includes/header.php'; ?>
                 </div>
             </header>
 
@@ -898,16 +1027,16 @@ if ($gwa_data) {
                                             <h4 class="text-base font-semibold text-gray-900">Dean's List</h4>
                                             <p class="text-sm text-gray-600">GWA ≤ 1.75, no grade > 2.5</p>
                                         </div>
-                                        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <?php echo $eligible_for_deans ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'; ?>">
-                                            <?php echo $eligible_for_deans ? 'Eligible' : 'Not Eligible'; ?>
+                                        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <?php echo $eligible_for_deans ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'; ?>">
+                                            <?php echo $eligible_for_deans ? 'Eligible' : 'Can Apply'; ?>
                                         </span>
                                     </div>
                                     <?php if (!$eligible_for_deans): ?>
-                                        <p class="text-xs text-red-500 mt-1">
+                                        <p class="text-xs text-amber-600 mt-2 font-medium">
                                             <?php if ($gwa_data['gwa'] > 1.75): ?>
-                                                GWA too high (<?php echo formatGWA($gwa_data['gwa']); ?>)
+                                                ⚠ GWA too high (<?php echo formatGWA($gwa_data['gwa']); ?>) - Adviser will review
                                             <?php elseif ($has_grade_above_25): ?>
-                                                Has grade(s) above 2.5
+                                                ⚠ Has grade(s) above 2.5 - Adviser will review
                                             <?php endif; ?>
                                         </p>
                                     <?php endif; ?>
@@ -916,7 +1045,7 @@ if ($gwa_data) {
                                 <!-- Latin Honors if 8+ semesters completed and no ongoing grades -->
                                 <?php if ($total_semesters >= 8 && !$has_ongoing_grades): ?>
                                     <div class="bg-purple-50 rounded-xl p-5 shadow-sm">
-                                        <h4 class="text-base font-semibold text-purple-900 mb-3">Latin Honors</h4>
+                                        <h4 class="text-base font-semibold text-purple-900 mb-3">Latin Honors (4th Year)</h4>
                                         <div class="space-y-2 text-sm">
                                             <?php
                                                 $honors = [
@@ -928,12 +1057,15 @@ if ($gwa_data) {
                                             ?>
                                                 <div class="flex justify-between items-center">
                                                     <span><?php echo $label; ?></span>
-                                                    <span class="px-2 py-1 rounded text-xs <?php echo $isEligible ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-600'; ?>">
-                                                        <?php echo $isEligible ? 'Eligible' : 'Not Eligible'; ?>
+                                                    <span class="px-2 py-1 rounded text-xs <?php echo $isEligible ? 'bg-purple-100 text-purple-800' : 'bg-amber-100 text-amber-800'; ?>">
+                                                        <?php echo $isEligible ? 'Eligible' : 'Can Apply'; ?>
                                                     </span>
                                                 </div>
                                             <?php endforeach; ?>
                                         </div>
+                                        <?php if (!$eligible_for_summa && !$eligible_for_magna && !$eligible_for_cum_laude): ?>
+                                            <p class="text-xs text-amber-600 mt-2 font-medium">⚠ Adviser will review your application</p>
+                                        <?php endif; ?>
                                     </div>
                                 <?php else: ?>
                                     <div class="bg-amber-50 rounded-xl p-5 shadow-sm border border-amber-200">
@@ -954,16 +1086,7 @@ if ($gwa_data) {
                             </div>
                         </div>
 
-                        <?php if (!$eligible_for_deans && !$eligible_for_summa && !$eligible_for_magna && !$eligible_for_cum_laude): ?>
-                            <div class="text-center py-12 bg-white rounded-3xl shadow-sm border border-gray-200 mt-8">
-                                <div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                                    <i data-lucide="alert-circle" class="w-8 h-8 text-gray-400"></i>
-                                </div>
-                                <h3 class="text-xl font-semibold text-gray-900 mb-2">Not Currently Eligible</h3>
-                                <p class="text-gray-600 mb-4">Your current GWA and grades do not meet the requirements for any honor.</p>
-                                <p class="text-sm text-gray-500">Keep working hard to improve your grades for the next application period!</p>
-                            </div>
-                        <?php else: ?>
+                        <?php // Always show application form when applications are open ?>
                             <?php if (!$application_period_status['can_apply']): ?>
                                 <div class="bg-gradient-to-br from-gray-50 to-gray-100 border-2 border-gray-200 rounded-3xl p-8 mt-8 shadow-sm max-w-lg mx-auto text-center">
                                     <div class="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center mx-auto mb-6">
@@ -980,7 +1103,8 @@ if ($gwa_data) {
                                             <i data-lucide="send" class="w-8 h-8 text-primary-600"></i>
                                         </div>
                                         <h3 class="text-2xl font-bold text-gray-900 mb-2">Submit Application</h3>
-                                        <p class="text-gray-600">Choose the honor type you're eligible for</p>
+                                        <p class="text-gray-600">Choose the honor type you want to apply for</p>
+                                        <p class="text-sm text-amber-600 mt-2">You can apply even if not eligible. Your adviser will be notified.</p>
                                     </div>
                                     <form method="POST" class="space-y-6">
                                         <div>
@@ -989,20 +1113,20 @@ if ($gwa_data) {
                                                     class="block w-full px-4 py-4 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-200 bg-white text-gray-900 font-medium">
                                                 <option value="">Choose honor type...</option>
 
-                                                <?php if ($eligible_for_deans): ?>
-                                                    <option value="deans_list">Dean's List (GWA ≤ 1.75, no grade > 2.5)</option>
-                                                <?php endif; ?>
+                                                <option value="deans_list" <?php echo !$eligible_for_deans ? 'class="text-red-600"' : ''; ?>>
+                                                    Dean's List (GWA ≤ 1.75, no grade > 2.5) <?php echo !$eligible_for_deans ? '- Not Eligible' : '- Eligible'; ?>
+                                                </option>
 
                                                 <?php if ($user_year_level == 4): ?>
-                                                    <?php if ($eligible_for_summa): ?>
-                                                        <option value="summa_cum_laude">Summa Cum Laude (1.00-1.25 GWA)</option>
-                                                    <?php endif; ?>
-                                                    <?php if ($eligible_for_magna): ?>
-                                                        <option value="magna_cum_laude">Magna Cum Laude (1.26-1.45 GWA)</option>
-                                                    <?php endif; ?>
-                                                    <?php if ($eligible_for_cum_laude): ?>
-                                                        <option value="cum_laude">Cum Laude (1.46-1.75 GWA)</option>
-                                                    <?php endif; ?>
+                                                    <option value="summa_cum_laude" <?php echo !$eligible_for_summa ? 'class="text-red-600"' : ''; ?>>
+                                                        Summa Cum Laude (1.00-1.25 GWA) <?php echo !$eligible_for_summa ? '- Not Eligible' : '- Eligible'; ?>
+                                                    </option>
+                                                    <option value="magna_cum_laude" <?php echo !$eligible_for_magna ? 'class="text-red-600"' : ''; ?>>
+                                                        Magna Cum Laude (1.26-1.45 GWA) <?php echo !$eligible_for_magna ? '- Not Eligible' : '- Eligible'; ?>
+                                                    </option>
+                                                    <option value="cum_laude" <?php echo !$eligible_for_cum_laude ? 'class="text-red-600"' : ''; ?>>
+                                                        Cum Laude (1.46-1.75 GWA) <?php echo !$eligible_for_cum_laude ? '- Not Eligible' : '- Eligible'; ?>
+                                                    </option>
                                                 <?php endif; ?>
                                             </select>
                                         </div>
@@ -1013,8 +1137,6 @@ if ($gwa_data) {
                                         </button>
                                     </form>
                                 </div>
-                            <?php endif; ?>
-
                             <?php endif; ?>
                         </div>
                     <?php endif; ?>

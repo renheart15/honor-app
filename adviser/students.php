@@ -240,6 +240,8 @@ if (!empty($search)) {
                             <option value="dean_list" <?php echo $filter === 'dean_list' ? 'selected' : ''; ?>>Dean's List</option>
                         </select>
                     </div>
+
+                    <?php include 'includes/header.php'; ?>
                 </div>
             </header>
 

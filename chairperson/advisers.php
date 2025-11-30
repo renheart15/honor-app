@@ -366,6 +366,8 @@ if ($filter !== 'all') {
                             Add Adviser
                         </button>
                     </div>
+
+                    <?php include 'includes/header.php'; ?>
                 </div>
             </header>
 

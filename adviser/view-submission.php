@@ -39,10 +39,8 @@ $stmt->bindParam(':user_id', $submission['user_id']);
 $stmt->execute();
 $gwa_data = $stmt->fetch(PDO::FETCH_ASSOC);
 
-// Extract grades from PDF
-$gradeExtractor = new GradeExtractor();
-
-// Try different possible paths for the PDF file (same logic as submissions.php)
+// Find the PDF file path (but don't extract grades yet)
+// Try different possible paths for the PDF file
 $possiblePaths = [
     __DIR__ . '/../uploads/' . $submission['file_path'],
     __DIR__ . '/../uploads/grades/' . $submission['file_path'],
@@ -58,32 +56,16 @@ foreach ($possiblePaths as $testPath) {
     }
 }
 
-$extractedData = ['success' => false, 'grades' => [], 'semesters' => []];
+// Create relative path for PDF viewer
+$pdfRelativePath = null;
 if ($pdfPath) {
-    $extractedData = $gradeExtractor->extractGradesFromPDF($pdfPath);
-}
-
-$grades = $extractedData['grades'] ?? [];
-$semesters = $extractedData['semesters'] ?? [];
-
-// DEBUG: Add debugging for final grades array (COMMENTED OUT - KEEP FOR LATER)
-/*
-if (!empty($extractedData['debug'])) {
-    $extractedData['debug']['final_grades_array'] = [
-        'total_count' => count($grades),
-        'sample_grades' => array_slice($grades, 0, 5),
-        'cs_grades_found' => array_filter($grades, function($g) { return strpos($g['subject_code'], 'CS') === 0; }),
-        'semesters_count' => count($semesters)
-    ];
-}
-*/
-
-// Calculate GWA from extracted grades if available
-$calculatedGWA = null;
-$semesterGWAs = null;
-if (!empty($grades)) {
-    $calculatedGWA = $gradeExtractor->calculateGWA($grades);
-    $semesterGWAs = $gradeExtractor->calculateGWAPerSemester($semesters);
+    $pdfRelativePath = '../uploads/' . basename(dirname($submission['file_path'])) . '/' . basename($submission['file_path']);
+    if (!file_exists(__DIR__ . '/' . $pdfRelativePath)) {
+        $pdfRelativePath = '../uploads/grades/' . basename($submission['file_path']);
+    }
+    if (!file_exists(__DIR__ . '/' . $pdfRelativePath)) {
+        $pdfRelativePath = '../' . $submission['file_path'];
+    }
 }
 
 // Handle form submissions for approve/reject
@@ -92,16 +74,22 @@ $message_type = '';
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $action = $_POST['action'] ?? '';
-    
+
     if ($action === 'approve') {
-        // Extract grades from PDF and save to database
+        // Extract grades from PDF NOW (only when approving)
+        $gradeExtractor = new GradeExtractor();
+
         if (!$pdfPath) {
             $message = 'PDF file not found for extraction.';
             $message_type = 'error';
-        } else if (!$extractedData['success'] || empty($extractedData['grades'])) {
-            $message = 'Failed to extract grades from PDF: ' . ($extractedData['message'] ?? 'Unknown error');
-            $message_type = 'error';
         } else {
+            // Extract grades from the PDF
+            $extractedData = $gradeExtractor->extractGradesFromPDF($pdfPath);
+
+            if (!$extractedData['success'] || empty($extractedData['grades'])) {
+                $message = 'Failed to extract grades from PDF: ' . ($extractedData['message'] ?? 'Unknown error');
+                $message_type = 'error';
+            } else {
             // Clear existing grades for this submission (in case of re-approval)
             $clear_query = "DELETE FROM grades WHERE submission_id = :submission_id";
             $clear_stmt = $db->prepare($clear_query);
@@ -151,6 +139,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $message = 'Failed to update submission status.';
                 $message_type = 'error';
             }
+        }
         }
     } elseif ($action === 'reject') {
         $rejection_reason = $_POST['rejection_reason'] ?? '';
@@ -273,206 +262,203 @@ if (isset($_GET['approved'])) {
                     </div>
 
 
-                    <!-- Extracted Grades Table -->
-                    <?php if (!empty($grades)): ?>
+                    <!-- PDF Viewer -->
+                    <?php if ($pdfRelativePath && file_exists(__DIR__ . '/' . $pdfRelativePath)): ?>
                         <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
                             <div class="p-6 border-b border-gray-200">
-                                <div class="flex items-center justify-between mb-4">
-                                    <h3 class="text-lg font-semibold text-gray-900 flex items-center">
-                                        <i data-lucide="list" class="w-5 h-5 text-primary-600 mr-2"></i>
-                                        Extracted Grades
-                                    </h3>
-                                    <span class="text-sm text-gray-500"><?php echo count($grades); ?> subjects found</span>
-                                </div>                                
-                                <!-- Semester Filter -->
-                                <div class="flex items-center space-x-4">
-                                    <label for="semesterFilter" class="text-sm font-medium text-gray-700">Filter by Semester:</label>
-                                    <select id="semesterFilter" class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
-                                        <option value="all">All Semesters</option>
-                                        <?php foreach (array_keys($semesters) as $semesterName): ?>
-                                            <option value="<?php echo htmlspecialchars($semesterName); ?>">
-                                                <?php echo htmlspecialchars($semesterName); ?>
-                                            </option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                    <span id="filteredCount" class="text-sm text-gray-500"></span>
-                                </div>
+                                <h3 class="text-lg font-semibold text-gray-900 flex items-center">
+                                    <i data-lucide="file-text" class="w-5 h-5 text-primary-600 mr-2"></i>
+                                    Grade Report PDF
+                                </h3>
+                                <p class="text-sm text-gray-500 mt-1">Review the submitted grade report below. Click "Approve" to extract and save the grades.</p>
                             </div>
-                            <div class="overflow-x-auto">
-                                <?php foreach ($semesters as $semesterName => $semesterGrades): ?>
-                                    <?php if (!empty($semesterGrades)): ?>
-                                        <div class="semester-section p-6 border-b border-gray-100 last:border-b-0" data-semester="<?php echo htmlspecialchars($semesterName); ?>">
-                                            <div class="flex items-center justify-between mb-4">
-                                                <h4 class="text-md font-semibold text-gray-800"><?php echo htmlspecialchars($semesterName); ?></h4>
-                                                <?php if (!empty($semesterGWAs[$semesterName]) && $semesterGWAs[$semesterName]['gwa'] > 0): ?>
-                                                    <div class="flex items-center space-x-4">
-                                                        <div class="text-right">
-                                                            <div class="text-lg font-bold text-primary-600">
-                                                                <?php echo sprintf('%.2f', floor($semesterGWAs[$semesterName]['gwa'] * 100) / 100); ?>
-                                                            </div>
-                                                            <div class="text-xs text-gray-500">Semester GWA</div>
-                                                        </div>
-                                                        <div class="text-right">
-                                                            <div class="text-sm font-semibold text-blue-600">
-                                                                <?php echo $semesterGWAs[$semesterName]['total_units']; ?>
-                                                            </div>
-                                                            <div class="text-xs text-gray-500">Units</div>
-                                                        </div>
-                                                        <div class="text-right">
-                                                            <div class="text-sm font-semibold text-green-600">
-                                                                <?php echo $semesterGWAs[$semesterName]['completed_subjects']; ?>
-                                                            </div>
-                                                            <div class="text-xs text-gray-500">Academic</div>
-                                                        </div>
-                                                        <?php if ($semesterGWAs[$semesterName]['nstp_subjects'] > 0): ?>
-                                                            <div class="text-right">
-                                                                <div class="text-sm font-semibold text-orange-600">
-                                                                    <?php echo $semesterGWAs[$semesterName]['nstp_subjects']; ?>
-                                                                </div>
-                                                                <div class="text-xs text-gray-500">NSTP</div>
-                                                            </div>
-                                                        <?php endif; ?>
-                                                        <?php if ($semesterGWAs[$semesterName]['incomplete_subjects'] > 0): ?>
-                                                            <div class="text-right">
-                                                                <div class="text-sm font-semibold text-gray-600">
-                                                                    <?php echo $semesterGWAs[$semesterName]['incomplete_subjects']; ?>
-                                                                </div>
-                                                                <div class="text-xs text-gray-500">Ongoing</div>
-                                                            </div>
-                                                        <?php endif; ?>
-                                                    </div>
-                                                <?php elseif (!empty($semesterGWAs[$semesterName])): ?>
-                                                    <div class="text-right">
-                                                        <div class="text-sm font-semibold text-gray-500">No GWA</div>
-                                                        <div class="text-xs text-gray-400">All subjects ongoing/NSTP</div>
-                                                    </div>
-                                                <?php endif; ?>
+                            <div class="p-6">
+                                <div class="mb-4 flex items-center justify-between">
+                                    <div>
+                                        <p class="text-sm text-gray-600">
+                                            <i data-lucide="info" class="w-4 h-4 inline mr-1"></i>
+                                            If the PDF doesn't display below, click "Open PDF" to view it in a new tab.
+                                        </p>
+                                        <!-- Debug: Show PDF path -->
+                                        <p class="text-xs text-gray-500 mt-1">
+                                            PDF Path: <?php echo htmlspecialchars($pdfRelativePath); ?>
+                                        </p>
+                                    </div>
+                                    <a href="<?php echo htmlspecialchars($pdfRelativePath); ?>" target="_blank" class="inline-flex items-center px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors">
+                                        <i data-lucide="external-link" class="w-4 h-4 mr-2"></i>
+                                        Open PDF in New Tab
+                                    </a>
+                                </div>
+
+                                <!-- PDF Viewer using PDF.js (bypasses X-Frame-Options) -->
+                                <div id="pdfViewerContainer" class="relative">
+                                    <div id="pdfCanvasContainer" class="rounded-lg border border-gray-200 bg-gray-100 overflow-auto" style="height: 800px;">
+                                        <!-- Navigation Controls -->
+                                        <div class="sticky top-0 bg-gray-800 text-white p-3 flex items-center justify-between z-10">
+                                            <div class="flex items-center gap-2">
+                                                <button id="prevPage" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">← Prev</button>
+                                                <span class="text-sm">Page <span id="currentPage">1</span> of <span id="totalPages">-</span></span>
+                                                <button id="nextPage" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">Next →</button>
                                             </div>
-                                            <div class="overflow-x-auto">
-                                                <table class="min-w-full divide-y divide-gray-200">
-                                                    <thead class="bg-gray-50">
-                                                        <tr>
-                                                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject Code</th>
-                                                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Subject Name</th>
-                                                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Units</th>
-                                                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Grade</th>
-                                                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Remarks</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody class="bg-white divide-y divide-gray-200">
-                                                        <?php foreach ($semesterGrades as $grade): ?>
-                                                            <tr class="hover:bg-gray-50">
-                                                                <td class="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                                                    <?php echo htmlspecialchars($grade['subject_code']); ?>
-                                                                </td>
-                                                                <td class="px-4 py-4 text-sm text-gray-900">
-                                                                    <div class="font-medium"><?php echo htmlspecialchars($grade['subject_name']); ?></div>
-                                                                    <?php if (!empty($grade['subject_type'])): ?>
-                                                                        <div class="text-xs text-gray-500"><?php echo htmlspecialchars($grade['subject_type']); ?></div>
-                                                                    <?php endif; ?>
-                                                                </td>
-                                                                <td class="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                                                                    <?php echo number_format($grade['units'], 2); ?>
-                                                                </td>
-                                                                <td class="px-4 py-4 whitespace-nowrap">
-                                                                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <?php echo $grade['grade'] <= 1.5 ? 'bg-green-100 text-green-800' : ($grade['grade'] <= 2.0 ? 'bg-yellow-100 text-yellow-800' : ($grade['grade'] <= 3.0 ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-800')); ?>">
-                                                                        <?php echo number_format($grade['grade'], 1); ?>
-                                                                    </span>
-                                                                </td>
-                                                                <td class="px-4 py-4 whitespace-nowrap">
-                                                                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <?php echo $grade['remarks'] === 'PASSED' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'; ?>">
-                                                                        <?php echo htmlspecialchars($grade['remarks']); ?>
-                                                                    </span>
-                                                                </td>
-                                                            </tr>
-                                                        <?php endforeach; ?>
-                                                    </tbody>
-                                                </table>
+                                            <div class="flex items-center gap-2">
+                                                <button id="zoomOut" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">−</button>
+                                                <span id="zoomLevel" class="text-sm">100%</span>
+                                                <button id="zoomIn" class="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">+</button>
                                             </div>
                                         </div>
-                                    <?php endif; ?>
-                                <?php endforeach; ?>
-                            </div>
-                            
-                            <!-- DEBUG INFO (COMMENTED OUT - KEEP FOR LATER) -->
-                            <?php /* DEBUG BLOCK - UNCOMMENT WHEN NEEDED
-                            if (!empty($extractedData['debug'])): ?>
-                                <div class="mt-6 bg-gray-50 p-4 rounded-lg">
-                                    <h5 class="font-semibold mb-2 text-sm">Debug Information:</h5>
-                                    <div class="text-xs space-y-2">
-                                        <div><strong>Total grades found:</strong> <?php echo $extractedData['debug']['total_grades_found'] ?? 0; ?></div>
-                                        <div><strong>Non-empty lines:</strong> <?php echo $extractedData['debug']['non_empty_lines'] ?? 0; ?></div>
-                                        
-                                        <?php if (!empty($extractedData['debug']['unparsed_cs_lines'])): ?>
-                                            <div>
-                                                <strong>CS subject lines that weren't parsed (<?php echo count($extractedData['debug']['unparsed_cs_lines']); ?> missing):</strong>
-                                                <ul class="bg-white p-2 rounded text-xs max-h-40 overflow-y-auto">
-                                                    <?php foreach ($extractedData['debug']['unparsed_cs_lines'] as $line): ?>
-                                                        <li class="mb-1 p-1 bg-red-50">Line <?php echo $line['line_number']; ?>: <?php echo htmlspecialchars($line['content']); ?></li>
-                                                    <?php endforeach; ?>
-                                                </ul>
-                                            </div>
-                                        <?php endif; ?>
-                                        
-                                        [ALL OTHER DEBUG SECTIONS PRESERVED HERE]
-                                        
+                                        <div id="pdfPages" class="flex flex-col items-center py-4 gap-4"></div>
+                                    </div>
+
+                                    <!-- Loading indicator -->
+                                    <div id="pdfLoading" class="absolute inset-0 flex items-center justify-center bg-gray-100 rounded-lg">
+                                        <div class="text-center">
+                                            <div class="animate-spin w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full mx-auto mb-2"></div>
+                                            <p class="text-gray-600">Loading PDF...</p>
+                                        </div>
+                                    </div>
+
+                                    <!-- Error message -->
+                                    <div id="pdfError" class="bg-red-50 p-8 rounded-lg text-center hidden">
+                                        <p class="text-red-700 mb-4">Unable to load PDF. <span id="pdfErrorMsg"></span></p>
+                                        <div class="flex gap-3 justify-center">
+                                            <a href="<?php echo htmlspecialchars($pdfRelativePath); ?>" target="_blank" class="inline-flex items-center px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium">Open in New Tab</a>
+                                            <a href="<?php echo htmlspecialchars($pdfRelativePath); ?>" download class="inline-flex items-center px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg text-sm font-medium">Download PDF</a>
+                                        </div>
                                     </div>
                                 </div>
-                            <?php endif; 
-                            END DEBUG BLOCK */ ?>
+
+                                <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+                                <script>
+                                    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                                    const pdfUrl = '<?php echo htmlspecialchars($pdfRelativePath); ?>';
+                                    let pdfDoc = null, currentPage = 1, scale = 1.0;
+
+                                    pdfjsLib.getDocument(pdfUrl).promise.then(function(pdf) {
+                                        pdfDoc = pdf;
+                                        document.getElementById('totalPages').textContent = pdf.numPages;
+                                        document.getElementById('pdfLoading').classList.add('hidden');
+                                        renderPage(currentPage);
+                                    }).catch(function(error) {
+                                        document.getElementById('pdfLoading').classList.add('hidden');
+                                        document.getElementById('pdfCanvasContainer').classList.add('hidden');
+                                        document.getElementById('pdfError').classList.remove('hidden');
+                                        document.getElementById('pdfErrorMsg').textContent = error.message || '';
+                                    });
+
+                                    function renderPage(pageNum) {
+                                        pdfDoc.getPage(pageNum).then(function(page) {
+                                            const viewport = page.getViewport({ scale: scale });
+                                            let canvas = document.getElementById('pdfCanvas');
+                                            if (!canvas) {
+                                                canvas = document.createElement('canvas');
+                                                canvas.id = 'pdfCanvas';
+                                                canvas.className = 'shadow-lg';
+                                                document.getElementById('pdfPages').innerHTML = '';
+                                                document.getElementById('pdfPages').appendChild(canvas);
+                                            }
+                                            canvas.height = viewport.height;
+                                            canvas.width = viewport.width;
+                                            page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport });
+                                            document.getElementById('currentPage').textContent = pageNum;
+                                        });
+                                    }
+
+                                    document.getElementById('prevPage').addEventListener('click', () => { if (currentPage > 1) renderPage(--currentPage); });
+                                    document.getElementById('nextPage').addEventListener('click', () => { if (pdfDoc && currentPage < pdfDoc.numPages) renderPage(++currentPage); });
+                                    document.getElementById('zoomIn').addEventListener('click', () => { scale = Math.min(scale + 0.25, 3); document.getElementById('zoomLevel').textContent = Math.round(scale * 100) + '%'; renderPage(currentPage); });
+                                    document.getElementById('zoomOut').addEventListener('click', () => { scale = Math.max(scale - 0.25, 0.5); document.getElementById('zoomLevel').textContent = Math.round(scale * 100) + '%'; renderPage(currentPage); });
+                                </script>
+                            </div>
                         </div>
                     <?php else: ?>
                         <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
                             <div class="p-12 text-center">
                                 <i data-lucide="file-x" class="w-16 h-16 text-gray-300 mx-auto mb-4"></i>
-                                <h4 class="text-lg font-medium text-gray-900 mb-2">No Grades Extracted</h4>
+                                <h4 class="text-lg font-medium text-gray-900 mb-2">PDF File Not Found</h4>
                                 <p class="text-gray-500">
-                                    <?php echo $extractedData['success'] ? 'No valid grade data could be extracted from the PDF file.' : htmlspecialchars($extractedData['message']); ?>
+                                    The uploaded PDF file could not be found or is not accessible.
                                 </p>
-                                
-                                <?php /* DEBUG BLOCK FOR NO GRADES - COMMENTED OUT - KEEP FOR LATER
-                                if (!empty($extractedData['debug'])): ?>
-                                    <div class="mt-6 text-left bg-gray-50 p-4 rounded-lg">
-                                        <h5 class="font-semibold mb-2">Debug Information:</h5>
-                                        <div class="text-xs space-y-2">
-                                            <?php if (isset($extractedData['debug']['raw_text_preview'])): ?>
-                                                <div>
-                                                    <strong>Raw text preview:</strong>
-                                                    <pre class="bg-white p-2 rounded text-xs max-h-40 overflow-y-auto"><?php echo htmlspecialchars($extractedData['debug']['raw_text_preview']); ?></pre>
-                                                </div>
-                                            <?php endif; ?>
-                                            
-                                            <?php if (isset($extractedData['debug']['first_10_lines'])): ?>
-                                                <div>
-                                                    <strong>First 10 non-empty lines:</strong>
-                                                    <ol class="bg-white p-2 rounded text-xs max-h-40 overflow-y-auto">
-                                                        <?php foreach ($extractedData['debug']['first_10_lines'] as $i => $line): ?>
-                                                            <li><?php echo htmlspecialchars($line); ?></li>
-                                                        <?php endforeach; ?>
-                                                    </ol>
-                                                </div>
-                                            <?php endif; ?>
-                                            
-                                            <?php if (isset($extractedData['debug']['potential_grade_lines'])): ?>
-                                                <div>
-                                                    <strong>Potential grade lines found:</strong>
-                                                    <ul class="bg-white p-2 rounded text-xs max-h-40 overflow-y-auto">
-                                                        <?php foreach ($extractedData['debug']['potential_grade_lines'] as $line): ?>
-                                                            <li>Line <?php echo $line['line_number']; ?>: <?php echo htmlspecialchars($line['content']); ?></li>
-                                                        <?php endforeach; ?>
-                                                    </ul>
-                                                </div>
-                                            <?php endif; ?>
-                                        </div>
-                                    </div>
-                                <?php endif; 
-                                END DEBUG BLOCK FOR NO GRADES */ ?>
                             </div>
                         </div>
                     <?php endif; ?>
 
-                    <!-- Calculated GWA Summary -->
-                    <?php if ($calculatedGWA): ?>
+                    <!-- Show extracted grades and GWA only after approval -->
+                    <?php if ($submission['status'] === 'processed' && $submission['id']): ?>
+                        <?php
+                        // Get extracted grades from the database for approved submissions
+                        $grades_query = "SELECT * FROM grades WHERE submission_id = :submission_id ORDER BY semester_taken, subject_code";
+                        $grades_stmt = $db->prepare($grades_query);
+                        $grades_stmt->bindParam(':submission_id', $submission['id'], PDO::PARAM_INT);
+                        $grades_stmt->execute();
+                        $saved_grades = $grades_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                        // DEBUG: Remove this after fixing
+                        error_log("Checking grades for submission ID: " . $submission['id'] . " - Found: " . count($saved_grades) . " grades");
+
+                        if (!empty($saved_grades)):
+                        ?>
+                        <div class="bg-white rounded-2xl shadow-sm border border-gray-200 mt-6">
+                            <div class="p-6 border-b border-gray-200">
+                                <h3 class="text-lg font-semibold text-gray-900 flex items-center">
+                                    <i data-lucide="check-circle" class="w-5 h-5 text-green-600 mr-2"></i>
+                                    Extracted & Saved Grades (<?php echo count($saved_grades); ?> subjects)
+                                </h3>
+                            </div>
+                            <div class="p-6">
+                                <div class="overflow-x-auto">
+                                    <table class="min-w-full divide-y divide-gray-200">
+                                        <thead class="bg-gray-50">
+                                            <tr>
+                                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Subject Code</th>
+                                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Subject Name</th>
+                                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Units</th>
+                                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Grade</th>
+                                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Semester</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="bg-white divide-y divide-gray-200">
+                                            <?php foreach ($saved_grades as $grade): ?>
+                                                <tr class="hover:bg-gray-50">
+                                                    <td class="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                                        <?php echo htmlspecialchars($grade['subject_code']); ?>
+                                                    </td>
+                                                    <td class="px-4 py-4 text-sm text-gray-900">
+                                                        <?php echo htmlspecialchars($grade['subject_name']); ?>
+                                                    </td>
+                                                    <td class="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
+                                                        <?php echo number_format($grade['units'], 2); ?>
+                                                    </td>
+                                                    <td class="px-4 py-4 whitespace-nowrap">
+                                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                                            <?php echo number_format($grade['grade'], 2); ?>
+                                                        </span>
+                                                    </td>
+                                                    <td class="px-4 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                        <?php echo htmlspecialchars($grade['semester_taken']); ?>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <?php else: ?>
+                        <!-- DEBUG: Show this when no grades found -->
+                        <div class="bg-yellow-50 rounded-2xl shadow-sm border border-yellow-200 mt-6">
+                            <div class="p-6">
+                                <p class="text-yellow-800">
+                                    <strong>Debug Info:</strong> Submission is marked as processed, but no grades found in database for submission ID: <?php echo $submission['id']; ?>
+                                </p>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+                    <?php else: ?>
+                    
+                    <?php endif; ?>
+
+                    <!-- Remove Calculated GWA Summary section -->
+                    <?php if (false): ?>
                         <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
                             <div class="p-6 border-b border-gray-200">
                                 <h3 class="text-lg font-semibold text-gray-900 flex items-center">
@@ -533,8 +519,8 @@ if (isset($_GET['approved'])) {
                         </div>
                     <?php endif; ?>
 
-                    <!-- GWA Per Semester Summary -->
-                    <?php if (!empty($semesterGWAs)): ?>
+                    <!-- GWA Per Semester Summary - Hidden, only shown after approval -->
+                    <?php if (false && !empty($semesterGWAs)): ?>
                         <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
                             <div class="p-6 border-b border-gray-200">
                                 <h3 class="text-lg font-semibold text-gray-900 flex items-center">
