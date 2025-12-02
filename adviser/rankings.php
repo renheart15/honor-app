@@ -305,7 +305,9 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                         </div>
                     </div>
 
-                    <?php include 'includes/header.php'; ?>
+                    <div class="flex items-center space-x-4">
+                        <?php include 'includes/header.php'; ?>
+                    </div>
                 </div>
             </header>
 

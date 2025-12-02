@@ -146,7 +146,21 @@ class AcademicPeriod {
             // Simply activate the selected period (allow multiple active periods)
             $stmt = $this->conn->prepare("UPDATE academic_periods SET is_active = 1, updated_at = NOW() WHERE id = :id");
             $stmt->bindParam(':id', $id);
-            return $stmt->execute();
+
+            if ($stmt->execute()) {
+                // Get period details for notification
+                $period = $this->getById($id);
+                if ($period) {
+                    $semester = $period['semester'] === '1st' ? '1st' : ($period['semester'] === '2nd' ? '2nd' : ucfirst($period['semester']));
+
+                    // Send notification to all students
+                    require_once 'NotificationManager.php';
+                    $notificationManager = new NotificationManager($this->conn);
+                    $notificationManager->notifyAcademicPeriodOpened($semester, $period['school_year'], $period['end_date']);
+                }
+                return true;
+            }
+            return false;
         } catch (PDOException $e) {
             error_log('AcademicPeriod setActive exception: ' . $e->getMessage());
             return false;
@@ -179,7 +193,21 @@ class AcademicPeriod {
             $stmt->bindParam(':id', $id);
             $stmt->bindParam(':start_date', $start_date);
             $stmt->bindParam(':end_date', $end_date);
-            return $stmt->execute();
+
+            if ($stmt->execute()) {
+                // Get period details for notification
+                $period = $this->getById($id);
+                if ($period) {
+                    $semester = $period['semester'] === '1st' ? '1st' : ($period['semester'] === '2nd' ? '2nd' : ucfirst($period['semester']));
+
+                    // Send notification to all students
+                    require_once 'NotificationManager.php';
+                    $notificationManager = new NotificationManager($this->conn);
+                    $notificationManager->notifyAcademicPeriodOpened($semester, $period['school_year'], $end_date);
+                }
+                return true;
+            }
+            return false;
         } catch (PDOException $e) {
             error_log('AcademicPeriod setActiveWithDates exception: ' . $e->getMessage());
             return false;

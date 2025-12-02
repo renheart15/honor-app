@@ -50,12 +50,27 @@ class GradeExtractor {
             $nonEmptyLines = array_filter($cleanLines, function($line) {
                 return !empty($line);
             });
-            
+
+            // CRITICAL FIX: Re-index array to have sequential keys starting from 0
+            // This is necessary for combineMultilineSubjects to work properly
+            $nonEmptyLines = array_values($nonEmptyLines);
+
             if ($this->debug) {
                 $debugInfo['non_empty_lines'] = count($nonEmptyLines);
                 $debugInfo['first_10_lines'] = array_slice($nonEmptyLines, 0, 10);
+
+                // Debug: Check if NSTP lines exist in nonEmptyLines
+                $debugInfo['nstp_in_nonempty'] = [];
+                foreach ($nonEmptyLines as $idx => $line) {
+                    if (strpos($line, 'NSTP') !== false) {
+                        $debugInfo['nstp_in_nonempty'][] = [
+                            'index' => $idx,
+                            'line' => $line
+                        ];
+                    }
+                }
             }
-            
+
             $grades = $this->parseGradeLines($nonEmptyLines, $debugInfo);
             
             return [
@@ -88,20 +103,41 @@ class GradeExtractor {
         // Skip table format processing - it's interfering with tab parsing
         // Process lines to handle table format
         // $processedLines = $this->processTableFormat($lines);
-        
+
+        // Debug: Check if NSTP lines exist before combining
+        if ($this->debug) {
+            $debugInfo['nstp_lines_before_combine'] = [];
+            foreach ($lines as $idx => $line) {
+                if (strpos($line, 'NSTP') !== false) {
+                    $debugInfo['nstp_lines_before_combine'][] = [
+                        'index' => $idx,
+                        'line' => $line
+                    ];
+                }
+            }
+        }
+
         // NEW: Combine multi-line subjects that got split during PDF extraction
-        $processedLines = $this->combineMultilineSubjects($lines);
+        $processedLines = $this->combineMultilineSubjects($lines, $debugInfo);
+
+        // TARGETED FIX: Handle NSTP subjects specifically (they split across 3 lines)
+        $processedLines = $this->fixNSTPSubjects($processedLines, $debugInfo);
         
-        // Debug: Track combined lines 
+        // Debug: Track combined lines
         if ($this->debug) {
             $debugInfo['combined_lines_sample'] = [];
             foreach ($processedLines as $lineNumber => $line) {
-                if (preg_match('/^CS\d+/', $line) && (strpos($line, 'CS47') === 0 || strpos($line, 'CS48') === 0 || strpos($line, 'CS80') === 0 || strpos($line, 'CS87') === 0)) {
+                // Track CS27, CS28 (NSTP), CS47, CS48, CS80, CS87
+                if (preg_match('/^CS\d+/', $line) &&
+                    (strpos($line, 'CS27') === 0 || strpos($line, 'CS28') === 0 ||
+                     strpos($line, 'CS47') === 0 || strpos($line, 'CS48') === 0 ||
+                     strpos($line, 'CS80') === 0 || strpos($line, 'CS87') === 0)) {
                     $debugInfo['combined_lines_sample'][] = [
                         'line_number' => $lineNumber,
                         'combined_line' => $line,
                         'length' => strlen($line),
-                        'has_grade' => preg_match('/\d+\.\d+\s*$/', $line) ? 'YES' : 'NO'
+                        'has_grade' => preg_match('/\d+\.\d+\s*$/', $line) ? 'YES' : 'NO',
+                        'has_nstp' => strpos($line, 'NSTP') !== false ? 'YES' : 'NO'
                     ];
                 }
             }
@@ -157,6 +193,21 @@ class GradeExtractor {
             
             // Try to parse as grade line
             $gradeData = $this->parseGradeLine($line, $debugInfo);
+
+            // Debug: Track CS74/CS75 parsing
+            if ($this->debug && (strpos($line, 'CS74') === 0 || strpos($line, 'CS75') === 0)) {
+                if (!isset($debugInfo['cs74_cs75_parsing'])) {
+                    $debugInfo['cs74_cs75_parsing'] = [];
+                }
+                $debugInfo['cs74_cs75_parsing'][] = [
+                    'line_number' => $lineNumber,
+                    'line' => $line,
+                    'current_semester' => $currentSemester,
+                    'parse_result' => $gradeData ? 'SUCCESS' : 'FAILED',
+                    'grade_data' => $gradeData ? json_encode($gradeData) : 'null'
+                ];
+            }
+
             if ($gradeData) {
                 $gradeData['semester'] = $currentSemester;
                 $gradeData['source_line'] = $line;
@@ -347,67 +398,212 @@ class GradeExtractor {
     }
 
     /**
+     * TARGETED FIX: Specifically handle NSTP subjects that split across 3 lines
+     * Pattern:
+     *   Line 1: CS27\tNSTP 1\tNATIONAL SERVICE TRAINING PROGRAM
+     *   Line 2: 1
+     *   Line 3: 3.00\t08:00AM-11:00AM\tSat\t1.9
+     */
+    private function fixNSTPSubjects($lines, &$debugInfo = []) {
+        $fixedLines = [];
+        $i = 0;
+        $lineCount = count($lines);
+
+        while ($i < $lineCount) {
+            $currentLine = isset($lines[$i]) ? $lines[$i] : '';
+
+            // Check if this is an NSTP line without a grade
+            if (preg_match('/^CS\d+\s*\t\s*NSTP\s+\d+\s*\t\s*NATIONAL SERVICE TRAINING PROGRAM\s*$/', $currentLine)) {
+                // This is an incomplete NSTP line, look ahead for the continuation
+                if ($i + 2 < $lineCount &&
+                    isset($lines[$i + 1]) &&
+                    isset($lines[$i + 2])) {
+
+                    $nextLine = trim($lines[$i + 1]);
+                    $gradeLine = trim($lines[$i + 2]);
+
+                    // Check if next line is a single digit and the line after has the grade info
+                    if (preg_match('/^\d+$/', $nextLine) &&
+                        preg_match('/^(\d+\.\d+)\t(\d+:\d+[AP]M-\d+:\d+[AP]M)\t([A-Za-z]+)\t(\d+\.\d+)$/', $gradeLine)) {
+                        // Combine all three lines
+                        $combined = $currentLine . " " . $nextLine . "\t" . $gradeLine;
+                        $fixedLines[] = $combined; // Use [] to avoid array index gaps
+
+                        if ($this->debug) {
+                            if (!isset($debugInfo['nstp_fixed'])) {
+                                $debugInfo['nstp_fixed'] = [];
+                            }
+                            $debugInfo['nstp_fixed'][] = [
+                                'original_line' => $currentLine,
+                                'continuation' => $nextLine,
+                                'grade_line' => $gradeLine,
+                                'combined' => $combined
+                            ];
+                        }
+
+                        $i += 3; // Skip the next 2 lines since we combined them
+                        continue;
+                    }
+                }
+            }
+
+            $fixedLines[] = $currentLine; // Use [] to maintain sequential indices
+            $i++;
+        }
+
+        return $fixedLines;
+    }
+
+    /**
      * Combine multi-line subjects that got split during PDF extraction
      */
-    private function combineMultilineSubjects($lines) {
+    private function combineMultilineSubjects($lines, &$debugInfo = []) {
         $combinedLines = [];
         $i = 0;
         $lineCount = count($lines);
-        
+
         while ($i < $lineCount) {
             $currentLine = isset($lines[$i]) ? $lines[$i] : '';
-            
+
             // Skip empty lines
             if (empty($currentLine)) {
                 $combinedLines[$i] = $currentLine;
                 $i++;
                 continue;
             }
-            
+
             // If this line starts with CS code but looks incomplete (missing grade at end)
-            if (preg_match('/^CS\d+\s/', $currentLine)) {
+            // Match both space and tab after CS code
+            if (preg_match('/^CS\d+[\s\t]/', $currentLine)) {
                 $combined = $currentLine;
                 $j = $i + 1;
-                
+
+                // Debug: Track when we enter combining logic for NSTP
+                if (strpos($currentLine, 'NSTP') !== false && $this->debug) {
+                    if (!isset($debugInfo['nstp_entering_combine'])) {
+                        $debugInfo['nstp_entering_combine'] = [];
+                    }
+                    $debugInfo['nstp_entering_combine'][] = [
+                        'i' => $i,
+                        'currentLine' => $currentLine,
+                        'j_initial' => $j
+                    ];
+                }
+
                 // Check if current line already has a grade (ends with decimal number)
                 $hasGrade = preg_match('/\d+\.\d+\s*$/', $currentLine);
-                
+
                 // Look ahead to find continuation lines only if no grade yet
                 if (!$hasGrade) {
+                    // Debug: Track while loop iterations for NSTP
+                    if (strpos($currentLine, 'NSTP') !== false && $this->debug) {
+                        if (!isset($debugInfo['nstp_while_loop'])) {
+                            $debugInfo['nstp_while_loop'] = [];
+                        }
+                    }
+
+                    // FIRST PASS: Look for complete grade lines (units + time + day + grade)
                     while ($j < $lineCount && isset($lines[$j])) {
                         $nextLine = trim($lines[$j]);
-                        
+
+                        // Debug: Track each iteration
+                        if (strpos($combined, 'NSTP') !== false && $this->debug) {
+                            $debugInfo['nstp_while_loop'][] = [
+                                'iteration' => count($debugInfo['nstp_while_loop']) + 1,
+                                'j' => $j,
+                                'nextLine' => $nextLine,
+                                'nextLine_hex' => bin2hex($nextLine),
+                                'nextLine_length' => strlen($nextLine),
+                                'matches_digit_pattern' => preg_match('/^\d+$/', $nextLine) ? 'YES' : 'NO',
+                                'combined_so_far' => $combined
+                            ];
+                        }
+
                         // Skip empty lines
                         if (empty($nextLine)) {
                             $j++;
                             continue;
                         }
-                        
+
                         // Stop if we hit another CS line or semester/header
-                        if (preg_match('/^CS\d+\s/', $nextLine) || 
-                            $this->isSemesterLine($nextLine) || 
+                        if (preg_match('/^CS\d+\s/', $nextLine) ||
+                            $this->isSemesterLine($nextLine) ||
                             $this->isHeaderLine($nextLine) ||
                             preg_match('/^Total Units/', $nextLine)) {
                             break;
                         }
-                        
-                        // Special handling for lines that look like continuation data
-                        // Lines with units, time, day, grade pattern: "3.00 01:00PM-02:00PM TueWTh 1.2"
-                        if (preg_match('/^\d+\.\d+\s+\d+:\d+[AP]M-\d+:\d+[AP]M\s+[A-Za-z]+\s+\d+\.\d+$/', $nextLine)) {
+
+                        // PRIMARY PATTERN: Complete grade line with all components
+                        // "3.00 01:00PM-02:00PM TueWTh 1.2" OR "3.00    01:00PM-02:00PM TueWTh 1.2"
+                        // ALSO HANDLE: Just "3.00 08:00AM-11:00AM Sat 1.9" (with tabs before)
+                        $matchesPrimary = preg_match('/^\d+\.\d+\s+\d+:\d+[AP]M-\d+:\d+[AP]M\s+[A-Za-z]+\s+\d+\.\d+$/', $nextLine) ||
+                            preg_match('/^\d+\.\d+\s{4,}\d+:\d+[AP]M-\d+:\d+[AP]M\s+[A-Za-z]+\s+\d+\.\d+$/', $nextLine) ||
+                            preg_match('/^(\d+\.\d+)\t(\d+:\d+[AP]M-\d+:\d+[AP]M)\t([A-Za-z]+)\t(\d+\.\d+)$/', $nextLine);
+
+                        // Debug: Track primary pattern matches for NSTP
+                        if ($this->debug && strpos($combined, 'NSTP') !== false) {
+                            if (!isset($debugInfo['nstp_primary_pattern'])) {
+                                $debugInfo['nstp_primary_pattern'] = [];
+                            }
+                            $debugInfo['nstp_primary_pattern'][] = [
+                                'j' => $j,
+                                'nextLine' => $nextLine,
+                                'nextLine_contains_nstp' => (strpos($nextLine, 'NSTP') !== false) ? 'YES' : 'NO',
+                                'combined_contains_nstp' => (strpos($combined, 'NSTP') !== false) ? 'YES' : 'NO',
+                                'matches_primary' => $matchesPrimary ? 'YES' : 'NO'
+                            ];
+                        }
+
+                        if ($matchesPrimary) {
+                            // Debug: Track primary pattern matches
+                            if ($this->debug) {
+                                if (!isset($debugInfo['primary_pattern_matched'])) {
+                                    $debugInfo['primary_pattern_matched'] = [];
+                                }
+                                $debugInfo['primary_pattern_matched'][] = [
+                                    'i' => $i,
+                                    'j' => $j,
+                                    'nextLine' => $nextLine,
+                                    'combined_before' => $combined,
+                                    'contains_cs74' => (strpos($combined, 'CS74') !== false) ? 'YES' : 'NO',
+                                    'contains_cs75' => (strpos($combined, 'CS75') !== false) ? 'YES' : 'NO'
+                                ];
+                            }
+
                             // This is the completion data - combine with tab separator
                             if (strpos($combined, "\t") !== false) {
                                 $combined .= "\t" . $nextLine;
                             } else {
                                 $combined .= " " . $nextLine;
                             }
+
+                            // Debug: Track combined result
+                            if ($this->debug) {
+                                $lastIdx = count($debugInfo['primary_pattern_matched']) - 1;
+                                $debugInfo['primary_pattern_matched'][$lastIdx]['combined_after'] = $combined;
+                            }
+
                             $j++;
-                            break; // We found the grade line, stop combining
+                            break; // We found the complete grade line, stop combining
                         }
-                        // Lines that look like subject continuation (text only, no numbers)
-                        else if (preg_match('/^[A-Z\s&\(\)]+$/i', $nextLine) && !preg_match('/^\d/', $nextLine)) {
-                            // This is subject name continuation
+                        // SPECIAL PATTERN: Split across 3 lines, where second line has just number
+                        // Line 1: "CS27\tNSTP 1\tNATIONAL SERVICE TRAINING PROGRAM"
+                        // Line 2: "1"  (continuation of subject name)
+                        // Line 3: "3.00\t08:00AM-11:00AM\tSat\t1.9" (grade info)
+                        if (preg_match('/^\d+$/', $nextLine) && strlen($nextLine) <= 2) {
+                            // Debug: Track when this pattern matches for NSTP
+                            if (strpos($combined, 'NSTP') !== false && $this->debug) {
+                                if (!isset($debugInfo['nstp_single_digit_match'])) {
+                                    $debugInfo['nstp_single_digit_match'] = [];
+                                }
+                                $debugInfo['nstp_single_digit_match'][] = [
+                                    'j' => $j,
+                                    'nextLine' => $nextLine,
+                                    'about_to_continue' => 'YES'
+                                ];
+                            }
+                            // This is a continuation number, append to subject name
                             if (strpos($combined, "\t") !== false) {
-                                // For tab-separated, append to the subject name part
                                 $parts = explode("\t", $combined);
                                 if (count($parts) >= 3) {
                                     $parts[2] .= " " . $nextLine; // Append to subject name
@@ -417,31 +613,262 @@ class GradeExtractor {
                                 $combined .= " " . $nextLine;
                             }
                             $j++;
+                            // Continue to next iteration - the while loop will check the next line
+                            // which should be the grade line
+                            continue;
                         }
-                        // Lines that start with numbers might be units/grades - combine them
-                        else if (preg_match('/^\d+\.\d+/', $nextLine)) {
+                        // WORD CONTINUATION PATTERN: Subject name split across lines
+                        // Line 1: "CS74\tPC 317\tINTRODUCTION TO HUMAN COMPUTER"
+                        // Line 2: "INTERACTION"  (continuation of subject name)
+                        // Line 3: "3.00\t09:00AM-12:00PM\tThF\t1.7" (grade info)
+                        else if (preg_match('/^[A-Z][A-Z\s]+$/', $nextLine) && strlen($nextLine) < 50) {
+                            // Debug: Track word continuation pattern
+                            if ($this->debug) {
+                                if (!isset($debugInfo['word_continuation_triggered'])) {
+                                    $debugInfo['word_continuation_triggered'] = [];
+                                }
+                                $debugInfo['word_continuation_triggered'][] = [
+                                    'i' => $i,
+                                    'j' => $j,
+                                    'nextLine' => $nextLine,
+                                    'combined_before' => $combined,
+                                    'nextLine_hex' => bin2hex($nextLine)
+                                ];
+                            }
+
+                            // This looks like a subject name continuation (all caps word/phrase)
+                            // Append to the subject name
+                            if (strpos($combined, "\t") !== false) {
+                                $parts = explode("\t", $combined);
+                                if (count($parts) >= 3) {
+                                    $parts[2] .= " " . $nextLine; // Append to subject name
+                                    $combined = implode("\t", $parts);
+                                }
+                            } else {
+                                $combined .= " " . $nextLine;
+                            }
+
+                            // Debug: Track combined result
+                            if ($this->debug) {
+                                $lastIdx = count($debugInfo['word_continuation_triggered']) - 1;
+                                $debugInfo['word_continuation_triggered'][$lastIdx]['combined_after'] = $combined;
+                            }
+
+                            $j++;
+                            // Continue looking for the grade line
+                            continue;
+                        }
+                        // TAB-SEPARATED GRADE LINE: "3.00\t08:00AM-11:00AM\tSat\t1.9"
+                        // This happens when the grade info is on a separate line with tabs (without the "1" continuation)
+                        if (preg_match('/^(\d+\.\d+)\t(\d+:\d+[AP]M-\d+:\d+[AP]M)\t([A-Za-z]+)\t(\d+\.\d+)$/', $nextLine)) {
+                            // Debug: Track tab-separated grade line matches
+                            if ($this->debug) {
+                                if (!isset($debugInfo['tab_grade_line_matched'])) {
+                                    $debugInfo['tab_grade_line_matched'] = [];
+                                }
+                                $debugInfo['tab_grade_line_matched'][] = [
+                                    'i' => $i,
+                                    'j' => $j,
+                                    'nextLine' => $nextLine,
+                                    'combined_before' => $combined
+                                ];
+                            }
+
+                            // This is tab-separated grade info - append it
                             if (strpos($combined, "\t") !== false) {
                                 $combined .= "\t" . $nextLine;
                             } else {
-                                $combined .= " " . $nextLine;  
+                                $combined .= " " . $nextLine;
+                            }
+
+                            // Debug: Track combined result after appending grade line
+                            if ($this->debug) {
+                                $lastIdx = count($debugInfo['tab_grade_line_matched']) - 1;
+                                $debugInfo['tab_grade_line_matched'][$lastIdx]['combined_after'] = $combined;
+                            }
+
+                            $j++;
+                            break; // We found the grade line, stop combining
+                        }
+                        // SECONDARY PATTERN: Just time/day/grade without units
+                        else if (preg_match('/^\d+:\d+[AP]M-\d+:\d+[AP]M\s+[A-Za-z]+\s+\d+\.\d+$/', $nextLine)) {
+                            // This might be time/day/grade - check if we can find units earlier
+                            $timeDayGrade = $nextLine;
+
+                            // Look backwards for units in previous lines
+                            $units = "3.00"; // Default fallback
+                            for ($k = $j - 1; $k > $i; $k--) {
+                                $prevLine = trim($lines[$k]);
+                                if (preg_match('/^\d+\.\d+$/', $prevLine)) {
+                                    $units = $prevLine;
+                                    break;
+                                }
+                            }
+
+                            $completeLine = $units . " " . $timeDayGrade;
+                            if (strpos($combined, "\t") !== false) {
+                                $combined .= "\t" . $completeLine;
+                            } else {
+                                $combined .= " " . $completeLine;
+                            }
+                            $j++;
+                            break;
+                        }
+                        // TERTIARY PATTERN: Just grade alone (rare case)
+                        else if (preg_match('/^\d+\.\d+$/', $nextLine) && floatval($nextLine) >= 1.0 && floatval($nextLine) <= 4.0) {
+                            // This might be just a grade - construct a complete line
+                            $grade = $nextLine;
+
+                            // Look backwards for units and time/day
+                            $units = "3.00"; // Default
+                            $timeDay = "TBA"; // Default
+
+                            for ($k = $j - 1; $k > $i; $k--) {
+                                $prevLine = trim($lines[$k]);
+                                if (preg_match('/^\d+\.\d+$/', $prevLine) && $prevLine !== $grade) {
+                                    $units = $prevLine;
+                                } else if (preg_match('/^\d+:\d+[AP]M-\d+:\d+[AP]M\s+[A-Za-z]+$/', $prevLine)) {
+                                    $timeDay = $prevLine;
+                                }
+                            }
+
+                            $completeLine = $units . " " . $timeDay . " " . $grade;
+                            if (strpos($combined, "\t") !== false) {
+                                $combined .= "\t" . $completeLine;
+                            } else {
+                                $combined .= " " . $completeLine;
+                            }
+                            $j++;
+                            break;
+                        }
+                        // Subject name continuation (text only)
+                        else if (preg_match('/^[A-Z\s&\(\)\-\.]+$/', $nextLine) &&
+                                 !preg_match('/^\d/', $nextLine) &&
+                                 !preg_match('/[AP]M/', $nextLine)) {
+                            // This is subject name continuation
+                            if (strpos($combined, "\t") !== false) {
+                                // For tab-separated, append to the subject name part
+                                $parts = explode("\t", $combined);
+                                if (count($parts) >= 3) {
+                                    $parts[2] .= " " . $nextLine; // Append to subject name
+                                    $combined = implode("\t", $parts);
+                                } else {
+                                    $combined .= " " . $nextLine;
+                                }
+                            } else {
+                                $combined .= " " . $nextLine;
                             }
                             $j++;
                         }
                         else {
-                            // Unknown format, stop combining
-                            break;
+                            // For any other line that might contain grade info, try to append it
+                            $j++;
+                        }
+
+                        // Prevent infinite loops - limit look-ahead
+                        if ($j - $i > 10) break;
+                    }
+
+                    // AGGRESSIVE FALLBACK: Search extensively for any grade-like numbers
+                    if (!preg_match('/\d+\.\d+\s*$/', $combined)) {
+                        $foundGrade = false;
+                        $j = $i + 1;
+
+                        // Search up to 15 lines ahead for any grade-like number
+                        while ($j < $lineCount && isset($lines[$j]) && !$foundGrade) {
+                            $nextLine = trim($lines[$j]);
+
+                            // Stop at boundaries
+                            if (empty($nextLine) ||
+                                preg_match('/^CS\d+\s/', $nextLine) ||
+                                $this->isSemesterLine($nextLine) ||
+                                $this->isHeaderLine($nextLine) ||
+                                preg_match('/^Total Units/', $nextLine)) {
+                                break;
+                            }
+
+                            // Look for ANY decimal number that could be a grade (1.0-4.0)
+                            if (preg_match_all('/(\d+\.\d+)/', $nextLine, $gradeMatches)) {
+                                foreach ($gradeMatches[1] as $potentialGradeStr) {
+                                    $potentialGrade = floatval($potentialGradeStr);
+                                    // Accept any number between 1.0 and 4.0 as a potential grade
+                                    if ($potentialGrade >= 1.0 && $potentialGrade <= 4.0) {
+                                        // Try to construct complete grade info
+                                        $units = "3.00"; // Default
+                                        $time = "TBA";
+                                        $day = "TBA";
+
+                                        // Look for units in the current line or previous lines
+                                        if (preg_match('/(\d+\.\d+)\s+.*?\s+.*?\s+' . preg_quote($potentialGradeStr) . '/', $nextLine, $unitMatch)) {
+                                            $units = $unitMatch[1];
+                                        }
+
+                                        // Look for time/day pattern
+                                        if (preg_match('/(\d+:\d+[AP]M-\d+:\d+[AP]M)\s+([A-Za-z]+)/', $nextLine, $timeMatch)) {
+                                            $time = $timeMatch[1];
+                                            $day = $timeMatch[2];
+                                        }
+
+                                        $completeGradeLine = $units . " " . $time . " " . $day . " " . $potentialGrade;
+                                        if (strpos($combined, "\t") !== false) {
+                                            $combined .= "\t" . $completeGradeLine;
+                                        } else {
+                                            $combined .= " " . $completeGradeLine;
+                                        }
+                                        $foundGrade = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            $j++;
+                            if ($j - $i > 15) break; // Extended search limit
+                        }
+
+                        // If still no grade found, check if this might be an ongoing subject
+                        // and don't force a grade
+                        if (!$foundGrade && !preg_match('/\d+\.\d+/', $combined)) {
+                            // This appears to be an ongoing subject, leave as is
                         }
                     }
                 }
-                
+
                 $combinedLines[$i] = $combined;
+
+                // Debug: Track NSTP combinations
+                if (strpos($combined, 'NSTP') !== false && $this->debug) {
+                    if (!isset($debugInfo['nstp_combinations'])) {
+                        $debugInfo['nstp_combinations'] = [];
+                    }
+                    $debugInfo['nstp_combinations'][] = [
+                        'index' => $i,
+                        'combined' => $combined,
+                        'j_value' => $j,
+                        'original_line' => $currentLine
+                    ];
+                }
+
+                // Debug: Track CS74 and CS75 storage
+                if ($this->debug && (strpos($combined, 'CS74') !== false || strpos($combined, 'CS75') !== false)) {
+                    if (!isset($debugInfo['cs74_cs75_stored'])) {
+                        $debugInfo['cs74_cs75_stored'] = [];
+                    }
+                    $debugInfo['cs74_cs75_stored'][] = [
+                        'i' => $i,
+                        'j' => $j,
+                        'combined' => $combined,
+                        'next_i_will_be' => $j,
+                        'has_grade' => preg_match('/\d+\.\d+\s*$/', $combined) ? 'YES' : 'NO'
+                    ];
+                }
+
                 $i = $j;
             } else {
                 $combinedLines[$i] = $currentLine;
                 $i++;
             }
         }
-        
+
         return $combinedLines;
     }
     
@@ -594,255 +1021,13 @@ class GradeExtractor {
                 }
             }
         }
-        
-        // Pattern 1: CS20	AP 1	MULTIMEDIA	3.00	02:00PM-05:00PM	TueWF	1.8 (7 parts)
-        if (preg_match('/^CS20\t.*\t.*\t.*\t.*\t.*\t1\.8$/', $originalLine)) {
-            $parts = explode("\t", $originalLine);
-            
-            // Debug: Track successful hardcoded parsing
-            if ($this->debug && isset($debugInfo)) {
-                if (!isset($debugInfo['hardcoded_pattern_matches'])) {
-                    $debugInfo['hardcoded_pattern_matches'] = [];
-                }
-                $debugInfo['hardcoded_pattern_matches'][] = [
-                    'pattern' => 'CS20',
-                    'line' => $originalLine,
-                    'parts_count' => count($parts),
-                    'parts' => $parts,
-                    'success' => count($parts) >= 7 ? 'YES' : 'NO'
-                ];
-            }
-            
-            if (count($parts) >= 7) {
-                return [
-                    'subject_code' => 'CS20',
-                    'subject_type' => 'AP 1',
-                    'subject_name' => 'MULTIMEDIA',
-                    'units' => 3.00,
-                    'time' => '02:00PM-05:00PM',
-                    'day' => 'TueWF',
-                    'grade' => 1.8,
-                    'letter_grade' => $this->convertToLetterGrade(1.8),
-                    'remarks' => $this->getRemarks(1.8)
-                ];
-            }
-        }
-        
-        // Pattern 2: CS21	CC 111	INTRODUCTION TO COMPUTING	3.00	01:00PM-02:00PM	MWTh	1.4 (7 parts)
-        if (preg_match('/^CS21\t.*\t.*\t.*\t.*\t.*\t1\.4$/', $originalLine)) {
-            return [
-                'subject_code' => 'CS21',
-                'subject_type' => 'CC 111',
-                'subject_name' => 'INTRODUCTION TO COMPUTING',
-                'units' => 3.00,
-                'time' => '01:00PM-02:00PM',
-                'day' => 'MWTh',
-                'grade' => 1.4,
-                'letter_grade' => $this->convertToLetterGrade(1.4),
-                'remarks' => $this->getRemarks(1.4)
-            ];
-        }
-        
-        // Pattern 3: CS22	CC 112	COMPUTER PROGRAMMING 1 (LEC)	2.00	01:00PM-02:00PM	TueTh	1.9 (7 parts)
-        if (preg_match('/^CS22\t.*\t.*\t.*\t.*\t.*\t1\.9$/', $originalLine)) {
-            return [
-                'subject_code' => 'CS22',
-                'subject_type' => 'CC 112',
-                'subject_name' => 'COMPUTER PROGRAMMING 1 (LEC)',
-                'units' => 2.00,
-                'time' => '01:00PM-02:00PM',
-                'day' => 'TueTh',
-                'grade' => 1.9,
-                'letter_grade' => $this->convertToLetterGrade(1.9),
-                'remarks' => $this->getRemarks(1.9)
-            ];
-        }
-        
-        // Pattern 4: CS23	CC 112 L	COMPUTER PROGRAMMING 1 (LAB)	3.00	02:00PM-05:00PM	MWF	1.7 (7 parts)
-        if (preg_match('/^CS23\t.*\t.*\t.*\t.*\t.*\t1\.7$/', $originalLine)) {
-            return [
-                'subject_code' => 'CS23',
-                'subject_type' => 'CC 112 L',
-                'subject_name' => 'COMPUTER PROGRAMMING 1 (LAB)',
-                'units' => 3.00,
-                'time' => '02:00PM-05:00PM',
-                'day' => 'MWF',
-                'grade' => 1.7,
-                'letter_grade' => $this->convertToLetterGrade(1.7),
-                'remarks' => $this->getRemarks(1.7)
-            ];
-        }
-        
-        // Additional patterns for subjects that have grades but are being parsed as ONGOING
-        
-        // CS27 NSTP 1 NATIONAL SERVICE TRAINING PROGRAM 1 - Grade 1.6
-        if (preg_match('/^CS27\t.*NATIONAL SERVICE TRAINING PROGRAM.*1\.6$/', $originalLine) || 
-            (strpos($originalLine, 'CS27') === 0 && strpos($originalLine, 'NATIONAL SERVICE') !== false)) {
-            return [
-                'subject_code' => 'CS27',
-                'subject_type' => 'NSTP 1',
-                'subject_name' => 'NATIONAL SERVICE TRAINING PROGRAM 1',
-                'units' => 3.00,
-                'time' => '08:00AM-11:00AM',
-                'day' => 'Sat',
-                'grade' => 1.6,
-                'letter_grade' => $this->convertToLetterGrade(1.6),
-                'remarks' => $this->getRemarks(1.6)
-            ];
-        }
-        
-        // CS28 NSTP 2 NATIONAL SERVICE TRAINING PROGRAM 2 - Grade 1.6  
-        if (preg_match('/^CS28\t.*NATIONAL SERVICE TRAINING PROGRAM.*1\.6$/', $originalLine) || 
-            (strpos($originalLine, 'CS28') === 0 && strpos($originalLine, 'NSTP 2') !== false)) {
-            return [
-                'subject_code' => 'CS28',
-                'subject_type' => 'NSTP 2', 
-                'subject_name' => 'NATIONAL SERVICE TRAINING PROGRAM 2',
-                'units' => 3.00,
-                'time' => '08:00AM-11:00AM',
-                'day' => 'Sat',
-                'grade' => 1.6,
-                'letter_grade' => $this->convertToLetterGrade(1.6),
-                'remarks' => $this->getRemarks(1.6)
-            ];
-        }
-        
-        // CS29 PC 121/MATH-E 2 DISCRETE MATHEMATICS - Grade 1.4
-        if (strpos($originalLine, 'CS29') === 0 && (strpos($originalLine, 'DISCRETE') !== false || strpos($originalLine, 'MATH') !== false)) {
-            return [
-                'subject_code' => 'CS29',
-                'subject_type' => 'PC 121/MATH-E 2',
-                'subject_name' => 'DISCRETE MATHEMATICS',
-                'units' => 3.00,
-                'time' => '01:00PM-02:00PM',
-                'day' => 'MWF', 
-                'grade' => 1.4,
-                'letter_grade' => $this->convertToLetterGrade(1.4),
-                'remarks' => $this->getRemarks(1.4)
-            ];
-        }
-        
-        // CS48 PC 223 INTEGRATIVE PROGRAMMING AND TECHNOLOGIES 1 - Grade 1.4
-        if (preg_match('/^CS48\t.*INTEGRATIVE PROGRAMMING.*1\.4$/', $originalLine) || 
-            (strpos($originalLine, 'CS48') === 0 && strpos($originalLine, 'INTEGRATIVE') !== false)) {
-            return [
-                'subject_code' => 'CS48',
-                'subject_type' => 'PC 223',
-                'subject_name' => 'INTEGRATIVE PROGRAMMING AND TECHNOLOGIES 1',
-                'units' => 3.00,
-                'time' => '02:00PM-05:00PM',
-                'day' => 'TueTh',
-                'grade' => 1.4,
-                'letter_grade' => $this->convertToLetterGrade(1.4),
-                'remarks' => $this->getRemarks(1.4)
-            ];
-        }
-        
-        // CS73 PC 316 SYSTEMS INTEGRATION AND ARCHITECTURE 1 - Grade 1.5
-        if (preg_match('/^CS73\t.*SYSTEMS INTEGRATION.*1\.5$/', $originalLine) || 
-            (strpos($originalLine, 'CS73') === 0 && strpos($originalLine, 'SYSTEMS INTEGRATION') !== false)) {
-            return [
-                'subject_code' => 'CS73',
-                'subject_type' => 'PC 316',
-                'subject_name' => 'SYSTEMS INTEGRATION AND ARCHITECTURE 1',
-                'units' => 3.00,
-                'time' => '02:00PM-05:00PM',
-                'day' => 'TueTh',
-                'grade' => 1.5,
-                'letter_grade' => $this->convertToLetterGrade(1.5),
-                'remarks' => $this->getRemarks(1.5)
-            ];
-        }
-        
-        // CS58 PC 3211 INFORMATION ASSURANCE AND SECURITY 1 (LEC) - Grade 2.0
-        if (preg_match('/^CS58\t.*INFORMATION ASSURANCE.*2\.0$/', $originalLine) || 
-            (strpos($originalLine, 'CS58') === 0 && strpos($originalLine, 'INFORMATION ASSURANCE') !== false)) {
-            return [
-                'subject_code' => 'CS58',
-                'subject_type' => 'PC 3211',
-                'subject_name' => 'INFORMATION ASSURANCE AND SECURITY 1 (LEC)',
-                'units' => 2.00,
-                'time' => '08:00AM-09:00AM',
-                'day' => 'TueTh',
-                'grade' => 2.0,
-                'letter_grade' => $this->convertToLetterGrade(2.0),
-                'remarks' => $this->getRemarks(2.0)
-            ];
-        }
-        
-        // CS59 PC 3211L INFORMATION ASSURANCE AND SECURITY 1 (LAB) - Grade 1.7
-        if (preg_match('/^CS59\t.*INFORMATION ASSURANCE.*1\.7$/', $originalLine) || 
-            (strpos($originalLine, 'CS59') === 0 && strpos($originalLine, 'INFORMATION ASSURANCE') !== false)) {
-            return [
-                'subject_code' => 'CS59',
-                'subject_type' => 'PC 3211L',
-                'subject_name' => 'INFORMATION ASSURANCE AND SECURITY 1 (LAB)',
-                'units' => 3.00,
-                'time' => '09:00AM-12:00PM',
-                'day' => 'MW',
-                'grade' => 1.7,
-                'letter_grade' => $this->convertToLetterGrade(1.7),
-                'remarks' => $this->getRemarks(1.7)
-            ];
-        }
-        
-        // Pattern 5: CS22	CC 123	COMPUTER PROGRAMMING 2 (LEC)	2.00	01:00PM-02:00PM	TueTh	1.9 (7 parts, 2nd semester)
-        if (preg_match('/^CS22\tCC 123\t.*\t2\.00\t01:00PM-02:00PM\tTueTh\t1\.9$/', $originalLine)) {
-            return [
-                'subject_code' => 'CS22',
-                'subject_type' => 'CC 123',
-                'subject_name' => 'COMPUTER PROGRAMMING 2 (LEC)',
-                'units' => 2.00,
-                'time' => '01:00PM-02:00PM',
-                'day' => 'TueTh',
-                'grade' => 1.9,
-                'letter_grade' => $this->convertToLetterGrade(1.9),
-                'remarks' => $this->getRemarks(1.9)
-            ];
-        }
-        
-        // Pattern 6: CS23	CC 123L	COMPUTER PROGRAMMING 2 (LAB)	3.00	02:00PM-05:00PM	MThF	1.6 (7 parts)
-        if (preg_match('/^CS23\t.*\t.*\t.*\t.*\t.*\t1\.6$/', $originalLine)) {
-            return [
-                'subject_code' => 'CS23',
-                'subject_type' => 'CC 123L',
-                'subject_name' => 'COMPUTER PROGRAMMING 2 (LAB)',
-                'units' => 3.00,
-                'time' => '02:00PM-05:00PM',
-                'day' => 'MThF',
-                'grade' => 1.6,
-                'letter_grade' => $this->convertToLetterGrade(1.6),
-                'remarks' => $this->getRemarks(1.6)
-            ];
-        }
-        
-        // NEW TABLE FORMAT PARSER - For later semesters that may not use tabs
-        // Pattern: CS47 GEC-TCW THE CONTEMPORARY WORLD 3.00 01:00PM-02:00PM TueWTh 1.2
-        if (preg_match('/^(CS\d+)\s+([A-Z\-0-9]+)\s+(.+?)\s+(\d+\.\d+)\s+(\d+:\d+[AP]M-\d+:\d+[AP]M)\s+([A-Za-z]+)\s+(\d+\.\d+)$/', $originalLine, $matches)) {
-            if ($this->debug && $isDebugLine) {
-                if (!isset($debugInfo['new_table_format_matches'])) {
-                    $debugInfo['new_table_format_matches'] = [];
-                }
-                $debugInfo['new_table_format_matches'][] = [
-                    'line' => $originalLine,
-                    'matches' => $matches,
-                    'success' => 'YES'
-                ];
-            }
-            
-            return [
-                'subject_code' => trim($matches[1]),
-                'subject_type' => trim($matches[2]),
-                'subject_name' => trim($matches[3]),
-                'units' => floatval($matches[4]),
-                'time' => trim($matches[5]),
-                'day' => trim($matches[6]),
-                'grade' => floatval($matches[7]),
-                'letter_grade' => $this->convertToLetterGrade(floatval($matches[7])),
-                'remarks' => $this->getRemarks(floatval($matches[7]))
-            ];
-        }
-        
+
+        /* ============================================================================
+         * REMOVED 200+ LINES OF HARDCODED GRADE PATTERNS (lines 598-799)
+         * These were matching specific subjects and hardcoding grades instead of
+         * extracting from PDF, causing massive inaccuracy. All extraction is now dynamic.
+         * ============================================================================ */
+
         // GENERAL TAB-BASED PATTERN PARSER - ENHANCED
         // Handle any CS line with tabs (check for both actual tabs and converted spaces)
         if (preg_match('/^(CS\d+)\t/', $originalLine) || (strpos($originalLine, "\t") !== false && preg_match('/^CS\d+/', $originalLine))) {
@@ -871,92 +1056,75 @@ class GradeExtractor {
                 
                 // Enhanced grade detection - look for numeric values that could be grades
                 $grade = 0.0;
-                
-                // First, check for specific known grades and fix truncated names for subjects that are problematic
-                if (strpos($subjectCode, 'CS29') === 0 && (strpos($subjectName, 'DISCRETE') !== false || strpos($subjectName, 'MATH') !== false)) {
-                    $subjectName = 'DISCRETE MATHEMATICS'; // Fix name
-                    $subjectType = 'PC 121/MATH-E 2'; // Fix type
-                    $units = 3.00; // Fix units
-                    $grade = 1.4; // Known from PDF
-                } else if (strpos($subjectCode, 'CS48') === 0 && strpos($subjectName, 'INTEGRATIVE') !== false) {
-                    $subjectName = 'INTEGRATIVE PROGRAMMING AND TECHNOLOGIES 1'; // Fix truncated name
-                    $subjectType = 'PC 223'; // Ensure correct type
-                    $units = 3.00; // Fix units
-                    $grade = 1.4; // Known from PDF  
-                } else if (strpos($subjectCode, 'CS73') === 0 && strpos($subjectName, 'SYSTEMS') !== false) {
-                    $subjectName = 'SYSTEMS INTEGRATION AND ARCHITECTURE 1'; // Fix name 
-                    $subjectType = 'PC 316'; // Ensure correct type
-                    $units = 3.00; // Fix units
-                    $grade = 1.5; // Known from PDF
-                } else if (strpos($subjectCode, 'CS53') === 0 && strpos($subjectName, 'IOS') !== false) {
-                    $subjectName = 'IOS MOBILE APPLICATION DEVELOPMENT CROSS-PLATFORM'; // Fix name
-                    $subjectType = 'AP 4'; // Ensure correct type
-                    $units = 3.00; // Fix units
-                    $grade = 1.3; // Known from PDF
-                } else if (strpos($subjectCode, 'CS104') === 0) {
-                    // CS104 has no grade in PDF - should be ONGOING
-                    $subjectName = 'CROSS-PLATFORM SCRIPT DEVELOPMENT TECHNOLOGY';
-                    $subjectType = 'AP 6';
-                    $units = 3.00;
-                    $grade = 0.0; // No grade in PDF
-                } else if (strpos($subjectCode, 'CS105') === 0) {
-                    // CS105 has no grade in PDF - should be ONGOING
-                    $subjectName = 'SYSTEMS INTEGRATION AND ARCHITECTURE 2';
-                    $subjectType = 'P ELEC 4';
-                    $units = 3.00;
-                    $grade = 0.0; // No grade in PDF
-                } else if (strpos($subjectCode, 'CS106') === 0) {
-                    // CS106 has no grade in PDF - should be ONGOING
-                    $subjectName = 'INFORMATION ASSURANCE AND SECURITY 2 (LEC)';
-                    $subjectType = 'PC 4112';
-                    $units = 2.00;
-                    $grade = 0.0; // No grade in PDF
-                } else if (strpos($subjectCode, 'CS107') === 0) {
-                    // CS107 has no grade in PDF - should be ONGOING
-                    $subjectName = 'INFORMATION ASSURANCE AND SECURITY 2 (LAB)';
-                    $subjectType = 'PC 4112L';
-                    $units = 3.00;
-                    $grade = 0.0; // No grade in PDF
-                } else if (strpos($subjectCode, 'CS108') === 0) {
-                    // CS108 has no grade in PDF - should be ONGOING
-                    $subjectName = 'SYSTEMS ADMINISTRATION AND MAINTENANCE';
-                    $subjectType = 'PC 4113';
-                    $units = 3.00;
-                    $grade = 0.0; // No grade in PDF
-                } else if (strpos($subjectCode, 'CS109') === 0) {
-                    // CS109 has no grade in PDF - should be ONGOING
-                    $subjectName = 'CAPSTONE PROJECT AND RESEARCH 2';
-                    $subjectType = 'PC 4114';
-                    $units = 3.00;
-                    $grade = 0.0; // No grade in PDF
+
+                // ENHANCED GRADE DETECTION LOGIC
+                // Handle special case: malformed lines where last part contains "units time day grade"
+                // Example: "3.00 01:00PM-03:00PM MW 3"
+                if ($count == 4 && isset($parts[3]) && strpos($parts[3], ' ') !== false) {
+                    // Last part contains multiple fields
+                    $lastPartFields = preg_split('/\s+/', trim($parts[3]));
+                    if (count($lastPartFields) >= 4) {
+                        // Extract: [units, time, day, grade]
+                        $units = floatval($lastPartFields[0]);
+                        $time = isset($lastPartFields[1]) ? $lastPartFields[1] : '';
+                        $day = isset($lastPartFields[2]) ? $lastPartFields[2] : '';
+                        $grade = floatval(end($lastPartFields)); // Last element is grade
+                    }
                 } else {
                     // Search through all parts for a potential grade (decimal number between 1.0-4.0)
+                    // IMPROVED: Don't exclude 3.00 and 2.00 blindly, use better heuristics
                     for ($i = $count - 1; $i >= 3; $i--) {
-                        if (isset($parts[$i])) {
+                        if (isset($parts[$i]) && !empty(trim($parts[$i]))) {
                             $potentialGrade = floatval(trim($parts[$i]));
-                            // Grade should be between 1.0 and 4.0 for most academic systems
-                            if ($potentialGrade >= 1.0 && $potentialGrade <= 4.0 && preg_match('/^\d+\.\d+$/', trim($parts[$i]))) {
-                                $grade = $potentialGrade;
-                                break;
+                            // Grade should be between 1.0 and 4.0
+                            if ($potentialGrade >= 1.0 && $potentialGrade <= 4.0 &&
+                                preg_match('/^\d+\.\d+$/', trim($parts[$i]))) {
+
+                                // IMPROVED LOGIC: Check if this is actually units or grade
+                                // Units field is always at index 3 in proper 7-part format
+                                // If we're at index 3 AND the value is 2.00 or 3.00, it's likely units
+                                // But if we're at index 6 (last position), it's likely a grade
+                                if ($i == 3 && ($potentialGrade == 2.00 || $potentialGrade == 3.00)) {
+                                    // This is the units field, not grade
+                                    continue;
+                                }
+
+                                // If we found a value at the last position, it's most likely the grade
+                                if ($i == $count - 1) {
+                                    $grade = $potentialGrade;
+                                    break;
+                                }
+
+                                // For other positions, only use if different from units
+                                if ($potentialGrade != $units) {
+                                    $grade = $potentialGrade;
+                                    break;
+                                }
                             }
                         }
                     }
-                }
-                
-                // If no grade found by scanning, try the standard positions
-                if ($grade == 0.0) {
-                    if ($count == 8 && isset($parts[7])) {
-                        // 8 parts: CS20 | AP 1 | MULTIMEDIA | 3.00 | 02:00PM-05:00PM | TueWF | [ROOM] | 1.8
-                        $grade = floatval(trim($parts[7]));
-                    } elseif ($count == 7 && isset($parts[6])) {
-                        // 7 parts: CS24 | GEC-MMW | MATHEMATICS IN THE MODERN WORLD | 3.00 | 10:00AM-11:00AM | MWF | 1.5
-                        $grade = floatval(trim($parts[6]));
-                    } elseif ($count == 6 && isset($parts[5])) {
-                        // 6 parts: Some lines have units+name combined, grade at index 5
-                        $potentialGrade = floatval(trim($parts[5]));
-                        // Only use this as grade if it looks like a grade (not time or other data)
-                        if ($potentialGrade >= 1.0 && $potentialGrade <= 4.0) {
-                            $grade = $potentialGrade;
+
+                    // If no grade found by scanning, try the standard positions
+                    if ($grade == 0.0) {
+                        if ($count == 8 && isset($parts[7]) && !empty(trim($parts[7]))) {
+                            // 8 parts: CS20 | AP 1 | MULTIMEDIA | 3.00 | 02:00PM-05:00PM | TueWF | [ROOM] | 1.8
+                            $potentialGrade = floatval(trim($parts[7]));
+                            if ($potentialGrade >= 1.0 && $potentialGrade <= 4.0) {
+                                $grade = $potentialGrade;
+                            }
+                        } elseif ($count == 7 && isset($parts[6]) && !empty(trim($parts[6]))) {
+                            // 7 parts: CS24 | GEC-MMW | MATHEMATICS IN THE MODERN WORLD | 3.00 | 10:00AM-11:00AM | MWF | 1.5
+                            $potentialGrade = floatval(trim($parts[6]));
+                            if ($potentialGrade >= 1.0 && $potentialGrade <= 4.0) {
+                                $grade = $potentialGrade;
+                            }
+                        } elseif ($count == 6 && isset($parts[5]) && !empty(trim($parts[5]))) {
+                            // 6 parts: Some lines have units+name combined, grade at index 5
+                            $potentialGrade = floatval(trim($parts[5]));
+                            if ($potentialGrade >= 1.0 && $potentialGrade <= 4.0 &&
+                                $potentialGrade != $units) {
+                                $grade = $potentialGrade;
+                            }
                         }
                     }
                 }
@@ -1391,7 +1559,7 @@ class GradeExtractor {
         
         // Pattern for lines with parentheses - CS22 CC 112 COMPUTER PROGRAMMING 1 (LEC) 2.00 01:00PM-02:00PM TueTh 1.9
         if (preg_match('/^(CS\d+)\s+(.+?)\s+\(([A-Z]+)\)\s+(\d+\.\d+)\s+(\d+:\d+[AP]M-\d+:\d+[AP]M)\s+([A-Za-z]+)\s+(\d+\.\d+)$/', $line, $matches)) {
-            $subjectCode = trim($matches[1]);
+            $subjectCode = trim($matches[1 ]);
             $middlePart = trim($matches[2]);
             $lectureType = trim($matches[3]);
             $units = floatval($matches[4]);

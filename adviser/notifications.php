@@ -25,6 +25,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     } elseif ($action === 'delete') {
         $notification_id = $_POST['notification_id'] ?? 0;
         $notificationManager->deleteNotification($notification_id, $user_id);
+    } elseif ($action === 'delete_all') {
+        $notificationManager->deleteAllNotifications($user_id);
     }
 
     // Redirect to prevent form resubmission
@@ -158,6 +160,16 @@ $unread_count = $notificationManager->getUnreadCount($user_id);
                                 <button type="submit" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors">
                                     <i data-lucide="check-check" class="w-4 h-4 inline mr-2"></i>
                                     Mark All as Read
+                                </button>
+                            </form>
+                        <?php endif; ?>
+
+                        <?php if (!empty($notifications)): ?>
+                            <form method="POST" class="inline" onsubmit="return confirm('Are you sure you want to delete all notifications? This action cannot be undone.')">
+                                <input type="hidden" name="action" value="delete_all">
+                                <button type="submit" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors">
+                                    <i data-lucide="trash-2" class="w-4 h-4 inline mr-2"></i>
+                                    Delete All
                                 </button>
                             </form>
                         <?php endif; ?>

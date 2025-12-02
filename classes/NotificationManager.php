@@ -154,7 +154,7 @@ class NotificationManager {
             $message = "Your grade report was rejected. Reason: " . ($rejection_reason ?? 'Not specified');
             $type = 'error';
         }
-        return $this->createNotification($user_id, $title, $message, $type, 'grades');
+        return $this->createNotification($user_id, $title, $message, $type, 'gwa_calculation');
     }
 
     public function notifyApplicationStatus($user_id, $status, $application_type) {
@@ -169,7 +169,7 @@ class NotificationManager {
             $message = "Your {$type_label} application was rejected.";
             $type = 'error';
         }
-        return $this->createNotification($user_id, $title, $message, $type, 'application');
+        return $this->createNotification($user_id, $title, $message, $type, 'honor_application');
     }
 
     public function notifyAcademicPeriodOpened($semester, $school_year, $end_date) {
@@ -178,7 +178,7 @@ class NotificationManager {
 
         // Notify all students
         $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
-                  SELECT id, :title, :message, 'info', 'academic_period'
+                  SELECT id, :title, :message, 'info', 'system_update'
                   FROM users WHERE role = 'student' AND status = 'active'";
 
         $stmt = $this->conn->prepare($query);
@@ -199,7 +199,7 @@ class NotificationManager {
 
         // Notify all students
         $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
-                  SELECT id, :title, :message, 'warning', 'academic_period'
+                  SELECT id, :title, :message, 'warning', 'system_update'
                   FROM users WHERE role = 'student' AND status = 'active'";
 
         $stmt = $this->conn->prepare($query);
@@ -241,7 +241,7 @@ class NotificationManager {
 
         // Notify all advisers
         $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
-                  SELECT id, :title, :message, :type, 'academic_period'
+                  SELECT id, :title, :message, :type, 'system_update'
                   FROM users WHERE role = 'adviser' AND status = 'active'";
 
         $stmt = $this->conn->prepare($query);

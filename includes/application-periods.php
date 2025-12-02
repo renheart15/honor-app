@@ -108,35 +108,41 @@ function canStudentApply($db, $student_id) {
 
     $department = $user['department'];
 
-    // Check if application period is open
-    $active_period = isApplicationPeriodOpen($db, $department);
+    // Check if application period is open - use academic_periods instead of application_periods
+    // Academic periods control when applications can be submitted
+    $query = "SELECT * FROM academic_periods
+              WHERE is_active = 1
+              AND end_date >= CURDATE()
+              ORDER BY end_date DESC
+              LIMIT 1";
+
+    $stmt = $db->prepare($query);
+    $stmt->execute();
+    $active_period = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$active_period) {
-        $next_period = getNextApplicationPeriod($db, $department);
         return [
             'can_apply' => false,
-            'reason' => 'Application period is currently closed',
-            'next_period' => $next_period
+            'reason' => 'No active academic periods available for applications'
         ];
     }
 
     // Check if student already has a pending/approved application for this period
     $query = "SELECT COUNT(*) as count FROM honor_applications
               WHERE user_id = :student_id
-              AND status IN ('submitted', 'under_review', 'approved')
-              AND submitted_at BETWEEN :start_date AND :end_date";
+              AND academic_period_id = :academic_period_id
+              AND status IN ('submitted', 'under_review', 'approved', 'final_approved')";
 
     $stmt = $db->prepare($query);
     $stmt->bindParam(':student_id', $student_id);
-    $stmt->bindParam(':start_date', $active_period['start_date']);
-    $stmt->bindParam(':end_date', $active_period['end_date']);
+    $stmt->bindParam(':academic_period_id', $active_period['id']);
     $stmt->execute();
     $existing = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($existing['count'] > 0) {
         return [
             'can_apply' => false,
-            'reason' => 'You already have an application for this period',
+            'reason' => 'You already have an application for the current academic period',
             'active_period' => $active_period
         ];
     }

@@ -17,40 +17,70 @@ $message_type = '';
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
     $user_id = $_SESSION['user_id'];
     $application_type = $_POST['application_type'] ?? '';
+    $selected_period_id = $_POST['academic_period_id'] ?? null;
 
-    // Check if applications are open
-    $department = $_SESSION['department'] ?? '';
-    $can_apply = canStudentApply($db, $user_id);
-
-    if (!$can_apply['can_apply']) {
-        $message = $can_apply['reason'];
-        $message_type = 'error';
-    } elseif (empty($application_type)) {
+    if (empty($application_type)) {
         $message = 'Please select an honor type.';
         $message_type = 'error';
+    } elseif (empty($selected_period_id)) {
+        $message = 'Please select an application period.';
+        $message_type = 'error';
     } else {
-        // Check if user already has a pending application for this period
-        $active_period = $can_apply['active_period'];
-        $check_query = "SELECT COUNT(*) as count FROM honor_applications
-                       WHERE user_id = :user_id
-                       AND status IN ('submitted', 'under_review', 'approved', 'final_approved')
-                       AND submitted_at BETWEEN :start_date AND :end_date";
-        $check_stmt = $db->prepare($check_query);
-        $check_stmt->bindParam(':user_id', $user_id);
-        $check_stmt->bindParam(':start_date', $active_period['start_date']);
-        $check_stmt->bindParam(':end_date', $active_period['end_date']);
-        $check_stmt->execute();
-        $existing = $check_stmt->fetch(PDO::FETCH_ASSOC);
+        // Get the selected academic period
+        $period_query = "SELECT * FROM academic_periods WHERE id = :period_id AND is_active = 1";
+        $period_stmt = $db->prepare($period_query);
+        $period_stmt->bindParam(':period_id', $selected_period_id);
+        $period_stmt->execute();
+        $selected_period = $period_stmt->fetch(PDO::FETCH_ASSOC);
 
-        if ($existing['count'] > 0) {
-            $message = 'You already have a pending application for this period.';
+        if (!$selected_period) {
+            $message = 'Selected application period is not available.';
             $message_type = 'error';
         } else {
-            // Get student's current GWA for the application using accurate calculation
-            $current_period = $_SESSION['current_period'] ?? null;
-            $gwa_data_for_submission = null;
+            // Build semester string for matching grades
+            $semester_string = $selected_period['semester'] . ' Semester SY ' . $selected_period['school_year'];
 
-            if ($current_period) {
+            // Check if student has grades for this period
+            $grades_check_query = "SELECT COUNT(*) as grade_count
+                                   FROM grades g
+                                   JOIN grade_submissions gs ON g.submission_id = gs.id
+                                   WHERE gs.user_id = :user_id
+                                   AND gs.academic_period_id = :period_id
+                                   AND gs.status = 'processed'
+                                   AND g.semester_taken = :semester_string";
+
+            $grades_check_stmt = $db->prepare($grades_check_query);
+            $grades_check_stmt->bindParam(':user_id', $user_id);
+            $grades_check_stmt->bindParam(':period_id', $selected_period_id);
+            $grades_check_stmt->bindParam(':semester_string', $semester_string);
+            $grades_check_stmt->execute();
+            $grades_check = $grades_check_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($grades_check['grade_count'] == 0) {
+                $message = 'You do not have any grades submitted for the selected academic period. Please upload your grades first.';
+                $message_type = 'error';
+            } else {
+                // Check if user already has a pending application for this period and type
+            $check_query = "SELECT COUNT(*) as count FROM honor_applications
+                           WHERE user_id = :user_id
+                           AND academic_period_id = :period_id
+                           AND application_type = :application_type
+                           AND status IN ('submitted', 'under_review', 'approved', 'final_approved')";
+            $check_stmt = $db->prepare($check_query);
+            $check_stmt->bindParam(':user_id', $user_id);
+            $check_stmt->bindParam(':period_id', $selected_period_id);
+            $check_stmt->bindParam(':application_type', $application_type);
+            $check_stmt->execute();
+            $existing = $check_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($existing['count'] > 0) {
+                $message = 'You already have a pending application for this period and honor type.';
+                $message_type = 'error';
+            } else {
+                // Get student's GWA for the selected period using accurate calculation
+                $current_period = $selected_period_id;
+                $gwa_data_for_submission = null;
+
                 $submission_gwa_query = "
                     SELECT g.*, g.semester_taken
                     FROM grades g
@@ -324,10 +354,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
                             $message_type = 'error';
                         }
                     }
+                    }
                 }
-            } else {
-                $message = 'Unable to retrieve your GWA data. Please upload your grades first.';
-                $message_type = 'error';
             }
         }
     }
@@ -419,135 +447,79 @@ if ($current_period) {
     }
 }
 
-// Get GWA for the designated application period (most recent period with grades)
+// Get GWA for the most recent academic period with grades
 $application_period_gwa = null;
 $designated_academic_period = null;
 
-// Check if applications are open and get the application period
-$department = $_SESSION['department'] ?? '';
-$application_status = canStudentApply($db, $user_id);
+// Get the most recent academic period with grades for this student
+$recent_period_query = "
+    SELECT ap.*
+    FROM academic_periods ap
+    JOIN grade_submissions gs ON ap.id = gs.academic_period_id
+    JOIN grades g ON gs.id = g.submission_id
+    WHERE gs.user_id = :user_id AND gs.status = 'processed'
+    GROUP BY ap.id
+    ORDER BY ap.school_year DESC, ap.semester DESC
+    LIMIT 1
+";
 
-if ($application_status['can_apply'] && isset($application_status['active_period'])) {
-    $active_app_period = $application_status['active_period'];
+$recent_stmt = $db->prepare($recent_period_query);
+$recent_stmt->bindParam(':user_id', $user_id);
+$recent_stmt->execute();
+$designated_academic_period = $recent_stmt->fetch(PDO::FETCH_ASSOC);
 
-    // Try to find matching academic period for the application period
-    $matching_academic_query = "
-        SELECT * FROM academic_periods
-        WHERE (semester = :semester OR semester = :semester_alt)
-        AND (school_year = :school_year OR school_year = :school_year_alt)
-        LIMIT 1
+if ($designated_academic_period) {
+    $designated_period_id = $designated_academic_period['id'];
+
+    // Build semester string to match grades table format
+    $semester_display = $designated_academic_period['semester'] . ' Semester SY ' . $designated_academic_period['school_year'];
+
+    $app_period_query = "
+        SELECT g.*, g.semester_taken
+        FROM grades g
+        JOIN grade_submissions gs ON g.submission_id = gs.id
+        WHERE gs.user_id = :user_id
+        AND gs.academic_period_id = :designated_period_id
+        AND gs.status = 'processed'
+        AND g.semester_taken = :semester_filter
     ";
 
-    $semester_clean = str_replace(' Semester', '', $active_app_period['semester']);
-    $matching_stmt = $db->prepare($matching_academic_query);
-    $matching_stmt->bindParam(':semester', $semester_clean);
-    $matching_stmt->bindParam(':semester_alt', $active_app_period['semester']);
-    $matching_stmt->bindParam(':school_year', $active_app_period['academic_year']);
-    $matching_stmt->bindParam(':school_year_alt', $active_app_period['academic_year']);
-    $matching_stmt->execute();
-    $matching_academic = $matching_stmt->fetch(PDO::FETCH_ASSOC);
+    $app_period_stmt = $db->prepare($app_period_query);
+    $app_period_stmt->bindParam(':user_id', $user_id);
+    $app_period_stmt->bindParam(':designated_period_id', $designated_period_id);
+    $app_period_stmt->bindParam(':semester_filter', $semester_display);
+    $app_period_stmt->execute();
+    $app_period_grades = $app_period_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Check if the matching period has grades
-    $designated_period_id = null;
-    if ($matching_academic) {
-        $grades_check_query = "
-            SELECT COUNT(*) as grade_count
-            FROM grades g
-            JOIN grade_submissions gs ON g.submission_id = gs.id
-            WHERE gs.user_id = :user_id
-            AND gs.academic_period_id = :academic_period_id
-            AND gs.status = 'processed'
-        ";
+    if (!empty($app_period_grades)) {
+        $total_grade_points = 0;
+        $total_units = 0;
+        $valid_grades_count = 0;
 
-        $grades_check_stmt = $db->prepare($grades_check_query);
-        $grades_check_stmt->bindParam(':user_id', $user_id);
-        $grades_check_stmt->bindParam(':academic_period_id', $matching_academic['id']);
-        $grades_check_stmt->execute();
-        $grades_check = $grades_check_stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($grades_check['grade_count'] > 0) {
-            // Use the matching academic period
-            $designated_period_id = $matching_academic['id'];
-            $designated_academic_period = $matching_academic;
-        }
-    }
-
-    // If no grades in the application period, use the most recent period with grades
-    if (!$designated_period_id) {
-        $recent_period_query = "
-            SELECT ap.*
-            FROM academic_periods ap
-            JOIN grade_submissions gs ON ap.id = gs.academic_period_id
-            JOIN grades g ON gs.id = g.submission_id
-            WHERE gs.user_id = :user_id AND gs.status = 'processed'
-            GROUP BY ap.id
-            ORDER BY ap.school_year DESC, ap.semester DESC
-            LIMIT 1
-        ";
-
-        $recent_stmt = $db->prepare($recent_period_query);
-        $recent_stmt->bindParam(':user_id', $user_id);
-        $recent_stmt->execute();
-        $recent_period = $recent_stmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($recent_period) {
-            $designated_period_id = $recent_period['id'];
-            $designated_academic_period = $recent_period;
-        }
-    }
-
-    // Calculate GWA for the designated period
-    if ($designated_period_id) {
-        // Build semester string to match grades table format
-        $semester_filter = $active_app_period['semester'] . ' SY ' . $active_app_period['academic_year'];
-
-        $app_period_query = "
-            SELECT g.*, g.semester_taken
-            FROM grades g
-            JOIN grade_submissions gs ON g.submission_id = gs.id
-            WHERE gs.user_id = :user_id
-            AND gs.academic_period_id = :designated_period_id
-            AND gs.status = 'processed'
-            AND g.semester_taken = :semester_filter
-        ";
-
-        $app_period_stmt = $db->prepare($app_period_query);
-        $app_period_stmt->bindParam(':user_id', $user_id);
-        $app_period_stmt->bindParam(':designated_period_id', $designated_period_id);
-        $app_period_stmt->bindParam(':semester_filter', $semester_filter);
-        $app_period_stmt->execute();
-        $app_period_grades = $app_period_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        if (!empty($app_period_grades)) {
-            $total_grade_points = 0;
-            $total_units = 0;
-            $valid_grades_count = 0;
-
-            foreach ($app_period_grades as $grade) {
-                // Skip NSTP subjects and ongoing subjects (grade = 0) from GWA calculation
-                if (strpos($grade['subject_name'], 'NSTP') !== false ||
-                    strpos($grade['subject_name'], 'NATIONAL SERVICE TRAINING') !== false ||
-                    $grade['grade'] == 0) {
-                    continue;
-                }
-
-                $total_grade_points += ($grade['grade'] * $grade['units']);
-                $total_units += $grade['units'];
-                $valid_grades_count++;
+        foreach ($app_period_grades as $grade) {
+            // Skip NSTP subjects and ongoing subjects (grade = 0) from GWA calculation
+            if (stripos($grade['subject_name'], 'NSTP') !== false ||
+                stripos($grade['subject_name'], 'NATIONAL SERVICE TRAINING') !== false ||
+                $grade['grade'] == 0) {
+                continue;
             }
 
-            if ($total_units > 0) {
-                $gwa_exact = $total_grade_points / $total_units;
-                $gwa_calculated = floor($gwa_exact * 100) / 100; // Apply proper truncation
-                $application_period_gwa = [
-                    'gwa' => $gwa_calculated,
-                    'total_units' => $total_units,
-                    'subjects_count' => $valid_grades_count,
-                    'calculated_at' => date('Y-m-d H:i:s'),
-                    'period_name' => $designated_academic_period['period_name'] ?? 'Unknown Period',
-                    'period_id' => $designated_period_id
-                ];
-            }
+            $total_grade_points += ($grade['grade'] * $grade['units']);
+            $total_units += $grade['units'];
+            $valid_grades_count++;
+        }
+
+        if ($total_units > 0) {
+            $gwa_exact = $total_grade_points / $total_units;
+            $gwa_calculated = floor($gwa_exact * 100) / 100; // Apply proper truncation
+            $application_period_gwa = [
+                'gwa' => $gwa_calculated,
+                'total_units' => $total_units,
+                'subjects_count' => $valid_grades_count,
+                'calculated_at' => date('Y-m-d H:i:s'),
+                'period_name' => $designated_academic_period['period_name'] ?? 'Unknown Period',
+                'period_id' => $designated_period_id
+            ];
         }
     }
 }
@@ -805,7 +777,9 @@ if ($gwa_data) {
                         </div>
                     </div>
 
-                    <?php include 'includes/header.php'; ?>
+                    <div class="flex items-center space-x-4">
+                        <?php include 'includes/header.php'; ?>
+                    </div>
                 </div>
             </header>
 
@@ -828,6 +802,15 @@ if ($gwa_data) {
                     <?php
                     $department = $_SESSION['department'] ?? '';
                     $application_period_status = canStudentApply($db, $_SESSION['user_id']);
+
+                    // Get ALL activated academic periods that haven't expired
+                    $all_open_periods_query = "SELECT * FROM academic_periods
+                                               WHERE is_active = 1
+                                               AND end_date >= CURDATE()
+                                               ORDER BY start_date ASC";
+                    $all_open_stmt = $db->prepare($all_open_periods_query);
+                    $all_open_stmt->execute();
+                    $all_open_periods = $all_open_stmt->fetchAll(PDO::FETCH_ASSOC);
                     ?>
 
                     <?php if (!$application_period_status['can_apply']): ?>
@@ -850,52 +833,114 @@ if ($gwa_data) {
                                     </h4>
                                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-amber-800">
                                         <div class="text-center">
-                                            <p class="text-sm font-medium text-amber-600">Period</p>
+                                            <p class="text-sm font-medium text-amber-600 mb-1">Period</p>
                                             <p class="font-bold"><?php echo htmlspecialchars($application_period_status['next_period']['semester'] . ' ' . $application_period_status['next_period']['academic_year']); ?></p>
                                         </div>
                                         <div class="text-center">
-                                            <p class="text-sm font-medium text-amber-600">Opens</p>
+                                            <p class="text-sm font-medium text-amber-600 mb-1">Opens</p>
                                             <p class="font-bold"><?php echo date('M d, Y', strtotime($application_period_status['next_period']['start_date'])); ?></p>
                                         </div>
                                         <div class="text-center">
-                                            <p class="text-sm font-medium text-amber-600">Closes</p>
+                                            <p class="text-sm font-medium text-amber-600 mb-1">Closes</p>
                                             <p class="font-bold"><?php echo date('M d, Y', strtotime($application_period_status['next_period']['end_date'])); ?></p>
                                         </div>
                                     </div>
                                 </div>
                             <?php endif; ?>
+
+                            <!-- Debug Info for Admins -->
+                            <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
+                                <div class="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+                                    <h5 class="font-bold text-red-900 mb-2">🔧 Debug Info (Admin Only)</h5>
+                                    <div class="text-sm text-red-800 space-y-1">
+                                        <p><strong>Current Date:</strong> <?php echo date('Y-m-d'); ?></p>
+                                        <p><strong>Active Academic Periods:</strong> <?php echo count($all_open_periods ?? []); ?> found</p>
+                                        <p><strong>Application Periods Status:</strong> <?php echo $application_period_status['can_apply'] ? 'OPEN' : 'CLOSED'; ?></p>
+                                        <p><strong>Issue:</strong> Student applications page checks academic_periods.is_active=1, but should check application_periods.status='open'</p>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
                         </div>
                     <?php else: ?>
-                        <?php $active_period = $application_period_status['active_period']; ?>
-                        <div class="mb-8 p-8 bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-3xl shadow-sm">
-                            <div class="flex items-center mb-6">
-                                <div class="flex-shrink-0 w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center">
-                                    <i data-lucide="calendar-check" class="w-6 h-6 text-emerald-600"></i>
-                                </div>
-                                <div class="ml-4">
-                                    <h3 class="text-xl font-bold text-emerald-900">Applications Now Open!</h3>
-                                    <p class="text-emerald-700 mt-1">Submit your honor application now</p>
-                                </div>
-                            </div>
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                <div class="bg-white bg-opacity-60 rounded-2xl p-4 border border-emerald-200 text-center">
-                                    <p class="text-sm font-medium text-emerald-600 mb-1">Current Period</p>
-                                    <p class="font-bold text-emerald-900"><?php echo htmlspecialchars($active_period['semester'] . ' ' . $active_period['academic_year']); ?></p>
-                                </div>
-                                <div class="bg-white bg-opacity-60 rounded-2xl p-4 border border-emerald-200 text-center">
-                                    <p class="text-sm font-medium text-emerald-600 mb-1">Deadline</p>
-                                    <p class="font-bold text-emerald-900"><?php echo date('M d, Y', strtotime($active_period['end_date'])); ?></p>
-                                </div>
-                                <?php
-                                $days_remaining = getDaysRemaining($active_period);
-                                if ($days_remaining > 0):
-                                ?>
-                                    <div class="bg-white bg-opacity-60 rounded-2xl p-4 border border-emerald-200 text-center">
-                                        <p class="text-sm font-medium text-emerald-600 mb-1">Days Left</p>
-                                        <p class="font-bold text-emerald-900 text-2xl"><?php echo $days_remaining; ?></p>
+                        <div class="mb-8">
+                            <div class="p-8 bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-3xl shadow-sm mb-6">
+                                <div class="flex items-center mb-4">
+                                    <div class="flex-shrink-0 w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center">
+                                        <i data-lucide="calendar-check" class="w-6 h-6 text-emerald-600"></i>
                                     </div>
-                                <?php endif; ?>
+                                    <div class="ml-4">
+                                        <h3 class="text-xl font-bold text-emerald-900">Applications Now Open!</h3>
+                                        <p class="text-emerald-700 mt-1">Submit your honor application for any of the open periods below</p>
+                                    </div>
+                                </div>
                             </div>
+
+                            <!-- Display all open application periods -->
+                            <?php if (!empty($all_open_periods)): ?>
+                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                    <?php foreach ($all_open_periods as $period): ?>
+                                        <?php
+                                        // Calculate days remaining for this period
+                                        $end_date = new DateTime($period['end_date']);
+                                        $today = new DateTime();
+                                        $interval = $today->diff($end_date);
+                                        $period_days_remaining = $interval->invert ? 0 : $interval->days;
+                                        ?>
+                                        <div class="bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-2xl p-6 hover:shadow-lg transition-shadow">
+                                            <div class="text-center mb-4">
+                                                <div class="inline-flex items-center justify-center w-10 h-10 bg-emerald-100 rounded-full mb-3">
+                                                    <i data-lucide="calendar" class="w-5 h-5 text-emerald-600"></i>
+                                                </div>
+                                                <h4 class="font-bold text-emerald-900 text-lg mb-1">
+                                                    <?php echo htmlspecialchars($period['semester'] . ' Semester ' . $period['school_year']); ?>
+                                                </h4>
+                                            </div>
+                                            <div class="space-y-3">
+                                                <div class="bg-white bg-opacity-60 rounded-xl p-3 border border-emerald-200">
+                                                    <p class="text-xs font-medium text-emerald-600 mb-1">Deadline</p>
+                                                    <p class="font-bold text-emerald-900"><?php echo date('M d, Y', strtotime($period['end_date'])); ?></p>
+                                                </div>
+                                                <?php if ($period_days_remaining > 0): ?>
+                                                    <div class="bg-white bg-opacity-60 rounded-xl p-3 border border-emerald-200 text-center">
+                                                        <p class="text-xs font-medium text-emerald-600 mb-1">Days Left</p>
+                                                        <p class="font-bold text-emerald-900 text-2xl"><?php echo $period_days_remaining; ?></p>
+                                                    </div>
+                                                <?php elseif ($period_days_remaining == 0): ?>
+                                                    <div class="bg-red-50 bg-opacity-60 rounded-xl p-3 border border-red-200 text-center">
+                                                        <p class="text-xs font-medium text-red-600">Last Day!</p>
+                                                    </div>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            <?php else: ?>
+                                <?php
+                                // Fallback to showing single active period if the query returns no results
+                                $active_period = $application_period_status['active_period'];
+                                ?>
+                                <div class="bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-2xl p-6">
+                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                        <div class="bg-white bg-opacity-60 rounded-2xl p-4 border border-emerald-200 text-center">
+                                            <p class="text-sm font-medium text-emerald-600 mb-1">Current Period</p>
+                                            <p class="font-bold text-emerald-900"><?php echo htmlspecialchars($active_period['semester'] . ' ' . $active_period['academic_year']); ?></p>
+                                        </div>
+                                        <div class="bg-white bg-opacity-60 rounded-2xl p-4 border border-emerald-200 text-center">
+                                            <p class="text-sm font-medium text-emerald-600 mb-1">Deadline</p>
+                                            <p class="font-bold text-emerald-900"><?php echo date('M d, Y', strtotime($active_period['end_date'])); ?></p>
+                                        </div>
+                                        <?php
+                                        $days_remaining = getDaysRemaining($active_period);
+                                        if ($days_remaining > 0):
+                                        ?>
+                                            <div class="bg-white bg-opacity-60 rounded-2xl p-4 border border-emerald-200 text-center">
+                                                <p class="text-sm font-medium text-emerald-600 mb-1">Days Left</p>
+                                                <p class="font-bold text-emerald-900 text-2xl"><?php echo $days_remaining; ?></p>
+                                            </div>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
                         </div>
                     <?php endif; ?>
 
@@ -946,78 +991,8 @@ if ($gwa_data) {
                                 </div>
                             <?php endif; ?>
 
-                            <!-- Main GWA and Eligibility Section -->
-                            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
-                                <!-- Current/Selected Period GWA Card -->
-                                <div class="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-3xl shadow-lg border-2 border-blue-200 p-8 text-center h-full">
-                                    <div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                        <img src="../img/cebu-technological-university-seeklogo.png" alt="CTU Logo" class="w-16 h-16">
-                                    </div>
-                                    <!-- Current Period GWA -->
-                                    <div class="text-5xl font-bold text-blue-600 mb-2"><?php echo formatGWA($gwa_data['gwa']); ?></div>
-                                    <p class="text-lg font-semibold text-blue-900 mb-1">
-                                        <?php if ($application_period_gwa && $current_period == $active_academic_period['id']): ?>
-                                            Current Period GWA
-                                        <?php elseif ($application_period_gwa): ?>
-                                            Selected Period GWA
-                                        <?php else: ?>
-                                            Current Period GWA
-                                        <?php endif; ?>
-                                    </p>
-                                    <p class="text-blue-700 mb-1">Calculated Year: <?php echo $calculated_year_level; ?> (<?php echo $total_semesters; ?> semesters)</p>
-                                    <p class="text-blue-600 text-sm">Registered Year: <?php echo htmlspecialchars((string)($user_year_level ?? 'N/A')); ?></p>
-
-                                <?php if ($active_academic_period): ?>
-                                    <div class="mt-4 pt-4 border-t border-blue-200">
-                                        <p class="text-sm font-medium text-blue-600 mb-1">Academic Period</p>
-                                        <p class="text-sm font-bold text-blue-900">
-                                            <?php
-                                            $semester_display = $active_academic_period['semester'] === '1st' ? '1st Semester' :
-                                                              ($active_academic_period['semester'] === '2nd' ? '2nd Semester' :
-                                                              ucfirst($active_academic_period['semester']));
-                                            echo htmlspecialchars($semester_display . ' ' . $active_academic_period['school_year']);
-                                            ?>
-                                        </p>
-                                        <p class="text-xs text-blue-600 mt-1">
-                                            <?php echo date('M d', strtotime($active_academic_period['start_date'])); ?> -
-                                            <?php echo date('M d, Y', strtotime($active_academic_period['end_date'])); ?>
-                                        </p>
-                                    </div>
-                                <?php else: ?>
-                                    <div class="mt-4 pt-4 border-t border-blue-200">
-                                        <p class="text-sm text-blue-600">No active academic period</p>
-                                    </div>
-                                <?php endif; ?>
-
-                                <!-- Overall GWA for 2nd Semester 4th Year Students (only if they have 2nd year grades) -->
-                                <?php if ($is_2nd_sem_4th_year && $show_overall_gwa && $overall_gwa_data): ?>
-                                    <div class="mt-4 pt-4 border-t border-purple-200 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-2xl p-4 -mx-2">
-                                        <div class="flex items-center justify-center mb-2">
-                                            <i data-lucide="trophy" class="w-5 h-5 text-purple-600 mr-2"></i>
-                                            <p class="text-sm font-bold text-purple-800">Overall Current GWA</p>
-                                        </div>
-                                        <div class="text-3xl font-bold text-purple-600 mb-1"><?php echo formatGWA($overall_gwa_data['gwa']); ?></div>
-                                        <p class="text-xs text-purple-700">
-                                            Across <?php echo $overall_gwa_data['total_semesters']; ?> semesters (<?php echo $overall_gwa_data['calculated_year']; ?> years)
-                                        </p>
-                                        <p class="text-xs text-purple-600 mt-1">
-                                            Total Units: <?php echo number_format($overall_gwa_data['total_units'], 1); ?>
-                                        </p>
-                                    </div>
-                                <?php elseif ($is_2nd_sem_4th_year && !$show_overall_gwa): ?>
-                                    <!-- Message for 4th year students without 2nd year grades -->
-                                    <div class="mt-4 pt-4 border-t border-amber-200 bg-gradient-to-r from-amber-50 to-yellow-50 rounded-2xl p-4 -mx-2">
-                                        <div class="flex items-center justify-center mb-2">
-                                            <i data-lucide="info" class="w-5 h-5 text-amber-600 mr-2"></i>
-                                            <p class="text-sm font-bold text-amber-800">Application Period GWA Only</p>
-                                        </div>
-                                        <p class="text-xs text-amber-700 text-center">
-                                            Overall GWA unavailable - need at least 4 semesters (currently <?php echo $total_semesters; ?>)
-                                        </p>
-                                    </div>
-                                <?php endif; ?>
-                                </div>
-
+                            <!-- Eligibility Information Section -->
+                            <div class="space-y-4">
                                 <!-- Eligibility Information -->
                                 <div class="space-y-4 h-full">
                                 <!-- Dean's List -->
@@ -1027,9 +1002,6 @@ if ($gwa_data) {
                                             <h4 class="text-base font-semibold text-gray-900">Dean's List</h4>
                                             <p class="text-sm text-gray-600">GWA ≤ 1.75, no grade > 2.5</p>
                                         </div>
-                                        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium <?php echo $eligible_for_deans ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'; ?>">
-                                            <?php echo $eligible_for_deans ? 'Eligible' : 'Can Apply'; ?>
-                                        </span>
                                     </div>
                                     <?php if (!$eligible_for_deans): ?>
                                         <p class="text-xs text-amber-600 mt-2 font-medium">
@@ -1107,6 +1079,24 @@ if ($gwa_data) {
                                         <p class="text-sm text-amber-600 mt-2">You can apply even if not eligible. Your adviser will be notified.</p>
                                     </div>
                                     <form method="POST" class="space-y-6">
+                                        <!-- Academic Period Selector -->
+                                        <div>
+                                            <label for="academic_period_id" class="block text-sm font-bold text-gray-800 mb-3">Select Application Period</label>
+                                            <select id="academic_period_id" name="academic_period_id" required
+                                                    class="block w-full px-4 py-4 border-2 border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-all duration-200 bg-white text-gray-900 font-medium">
+                                                <option value="">Choose application period...</option>
+                                                <?php if (!empty($all_open_periods)): ?>
+                                                    <?php foreach ($all_open_periods as $period): ?>
+                                                        <option value="<?php echo $period['id']; ?>">
+                                                            <?php echo htmlspecialchars($period['semester'] . ' Semester ' . $period['school_year']); ?>
+                                                            - Deadline: <?php echo date('M d, Y', strtotime($period['end_date'])); ?>
+                                                        </option>
+                                                    <?php endforeach; ?>
+                                                <?php endif; ?>
+                                            </select>
+                                        </div>
+
+                                        <!-- Honor Type Selector -->
                                         <div>
                                             <label for="application_type" class="block text-sm font-bold text-gray-800 mb-3">Select Honor Type</label>
                                             <select id="application_type" name="application_type" required
@@ -1331,6 +1321,101 @@ if ($gwa_data) {
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <script>
         lucide.createIcons();
+
+        // Handle academic period selection
+        const periodSelector = document.getElementById('academic_period_id');
+        const honorTypeSelector = document.getElementById('application_type');
+        const submitButton = document.querySelector('button[name="apply"]');
+
+        if (periodSelector && honorTypeSelector && submitButton) {
+            periodSelector.addEventListener('change', function() {
+                const selectedPeriodId = this.value;
+
+                if (!selectedPeriodId) {
+                    // Reset honor type selector
+                    honorTypeSelector.innerHTML = '<option value="">Choose honor type...</option>';
+                    submitButton.disabled = true;
+                    return;
+                }
+
+                // Disable submit button and show loading
+                submitButton.disabled = true;
+                submitButton.innerHTML = '<i data-lucide="loader" class="w-5 h-5 inline mr-2 animate-spin"></i>Checking eligibility...';
+                lucide.createIcons();
+
+                // Fetch eligibility for the selected period
+                fetch(`check_period_eligibility.php?period_id=${selectedPeriodId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        // Reset submit button
+                        submitButton.disabled = false;
+                        submitButton.innerHTML = '<i data-lucide="send" class="w-5 h-5 inline mr-2"></i>Submit Application';
+                        lucide.createIcons();
+
+                        if (!data.success) {
+                            alert(data.message || 'Error checking eligibility');
+                            honorTypeSelector.innerHTML = '<option value="">Choose honor type...</option>';
+                            submitButton.disabled = true;
+                            return;
+                        }
+
+                        if (!data.has_grades) {
+                            alert('You do not have any grades submitted for this academic period. Please upload your grades first.');
+                            honorTypeSelector.innerHTML = '<option value="">Choose honor type...</option>';
+                            submitButton.disabled = true;
+                            return;
+                        }
+
+                        // Build honor type options based on eligibility
+                        let options = '<option value="">Choose honor type...</option>';
+
+                        // Dean's List - always available
+                        const deansEligible = data.eligible_for_deans;
+                        options += `<option value="deans_list" ${!deansEligible ? 'class="text-red-600"' : ''}>
+                            Dean's List (GWA ≤ 1.75, no grade > 2.5) ${deansEligible ? '- Eligible' : '- Not Eligible'}
+                        </option>`;
+
+                        // Latin Honors - only if requirements met
+                        if (data.can_apply_latin_honors) {
+                            const summaEligible = data.eligible_for_summa;
+                            const magnaEligible = data.eligible_for_magna;
+                            const cumLaudeEligible = data.eligible_for_cum_laude;
+
+                            options += `<option value="summa_cum_laude" ${!summaEligible ? 'class="text-red-600"' : ''}>
+                                Summa Cum Laude (1.00-1.25 GWA) ${summaEligible ? '- Eligible' : '- Not Eligible'}
+                            </option>`;
+                            options += `<option value="magna_cum_laude" ${!magnaEligible ? 'class="text-red-600"' : ''}>
+                                Magna Cum Laude (1.26-1.45 GWA) ${magnaEligible ? '- Not Eligible' : '- Eligible'}
+                            </option>`;
+                            options += `<option value="cum_laude" ${!cumLaudeEligible ? 'class="text-red-600"' : ''}>
+                                Cum Laude (1.46-1.75 GWA) ${cumLaudeEligible ? '- Eligible' : '- Not Eligible'}
+                            </option>`;
+                        } else if (data.latin_honors_message) {
+                            // Show message why Latin Honors is not available
+                            const messageDiv = document.createElement('div');
+                            messageDiv.className = 'mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl';
+                            messageDiv.innerHTML = `
+                                <h4 class="font-bold text-amber-900 mb-2">Latin Honors</h4>
+                                <p class="text-sm text-amber-800">${data.latin_honors_message}</p>
+                            `;
+                            // Insert after honor type selector
+                            if (!document.getElementById('latin-honors-notice')) {
+                                messageDiv.id = 'latin-honors-notice';
+                                honorTypeSelector.parentElement.appendChild(messageDiv);
+                            }
+                        }
+
+                        honorTypeSelector.innerHTML = options;
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        submitButton.disabled = false;
+                        submitButton.innerHTML = '<i data-lucide="send" class="w-5 h-5 inline mr-2"></i>Submit Application';
+                        lucide.createIcons();
+                        alert('Error checking eligibility. Please try again.');
+                    });
+            });
+        }
     </script>
 </body>
 </html>

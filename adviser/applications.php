@@ -42,14 +42,25 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $action = $_POST['action'] ?? '';
     
     if ($action === 'approve') {
-        $query = "UPDATE honor_applications 
-                  SET status = 'approved', reviewed_at = NOW(), reviewed_by = :adviser_id 
+        // Get application details first for notification
+        $get_app_query = "SELECT user_id, application_type FROM honor_applications WHERE id = :application_id";
+        $get_app_stmt = $db->prepare($get_app_query);
+        $get_app_stmt->bindParam(':application_id', $application_id);
+        $get_app_stmt->execute();
+        $application_data = $get_app_stmt->fetch(PDO::FETCH_ASSOC);
+
+        $query = "UPDATE honor_applications
+                  SET status = 'approved', reviewed_at = NOW(), reviewed_by = :adviser_id
                   WHERE id = :application_id";
         $stmt = $db->prepare($query);
         $stmt->bindParam(':adviser_id', $adviser_id);
         $stmt->bindParam(':application_id', $application_id);
-        
-        if ($stmt->execute()) {
+
+        if ($stmt->execute() && $application_data) {
+            // Notify student about approval
+            $notificationManager = new NotificationManager($db);
+            $notificationManager->notifyApplicationStatus($application_data['user_id'], 'approved', $application_data['application_type']);
+
             $message = 'Application approved successfully!';
             $message_type = 'success';
         } else {
@@ -58,16 +69,27 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         }
     } elseif ($action === 'reject') {
         $rejection_reason = $_POST['rejection_reason'] ?? '';
-        
-        $query = "UPDATE honor_applications 
-                  SET status = 'rejected', reviewed_at = NOW(), reviewed_by = :adviser_id, rejection_reason = :reason 
+
+        // Get application details first for notification
+        $get_app_query = "SELECT user_id, application_type FROM honor_applications WHERE id = :application_id";
+        $get_app_stmt = $db->prepare($get_app_query);
+        $get_app_stmt->bindParam(':application_id', $application_id);
+        $get_app_stmt->execute();
+        $application_data = $get_app_stmt->fetch(PDO::FETCH_ASSOC);
+
+        $query = "UPDATE honor_applications
+                  SET status = 'rejected', reviewed_at = NOW(), reviewed_by = :adviser_id, rejection_reason = :reason
                   WHERE id = :application_id";
         $stmt = $db->prepare($query);
         $stmt->bindParam(':adviser_id', $adviser_id);
         $stmt->bindParam(':application_id', $application_id);
         $stmt->bindParam(':reason', $rejection_reason);
-        
-        if ($stmt->execute()) {
+
+        if ($stmt->execute() && $application_data) {
+            // Notify student about rejection
+            $notificationManager = new NotificationManager($db);
+            $notificationManager->notifyApplicationStatus($application_data['user_id'], 'rejected', $application_data['application_type']);
+
             $message = 'Application rejected successfully!';
             $message_type = 'success';
         } else {
@@ -316,7 +338,9 @@ if ($filter !== 'all') {
                         </select>
                     </div>
 
-                    <?php include 'includes/header.php'; ?>
+                    <div class="flex items-center space-x-4">
+                        <?php include 'includes/header.php'; ?>
+                    </div>
                 </div>
             </header>
 

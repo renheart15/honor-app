@@ -367,7 +367,9 @@ if ($filter !== 'all') {
                         </button>
                     </div>
 
-                    <?php include 'includes/header.php'; ?>
+                    <div class="flex items-center space-x-4">
+                        <?php include 'includes/header.php'; ?>
+                    </div>
                 </div>
             </header>
 
