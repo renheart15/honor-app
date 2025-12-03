@@ -310,7 +310,7 @@ $html = '
                 <p style="font-size: 11pt; font-weight: bold;">TUBURAN CAMPUS</p>
                 <p style="font-size: 10pt;">Brgy 8, Poblacion Tuburan, Cebu, Philippines</p>
                 <p style="font-size: 8pt;">Website: <span style="text-decoration: underline; color: blue;">http://www.ctu.edu.ph</span> E-mail: <span style="text-decoration: underline; color: blue;">tuburan.campus@ctu.edu.ph</span></p>
-                <p style="font-size: 9pt;">Phone: +6332 463 9313 loc. 1512</p>
+                <p style="font-size: 9pt;">Phone: +6332 463 9313 loc. 1523</p>
             </td>
             <td class="logo-right">
                 <img src="' . realpath(__DIR__ . '/../img/Bagong-Pilipinas-Logo-1536x1444.png') . '" width="95" height="90" />

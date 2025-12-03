@@ -126,6 +126,20 @@ class GradeProcessor {
      * Retrieves all grades for a user in an academic period.
      */
     public function getStudentGrades($user_id, $academic_period_id) {
+        // Get the academic period details to build semester string
+        $period_sql = "SELECT * FROM academic_periods WHERE id = :period_id";
+        $period_stmt = $this->conn->prepare($period_sql);
+        $period_stmt->bindParam(':period_id', $academic_period_id);
+        $period_stmt->execute();
+        $period = $period_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$period) {
+            return []; // Invalid period
+        }
+
+        $expected_semester_string = $period['semester'] . ' Semester SY ' . $period['school_year'];
+
+        // First, try to get grades linked to submissions for this specific period
         $sql = "
             SELECT g.*
             FROM grades g
@@ -139,8 +153,28 @@ class GradeProcessor {
         $stmt->bindParam(':user_id', $user_id);
         $stmt->bindParam(':academic_period_id', $academic_period_id);
         $stmt->execute();
+        $period_grades = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        // If no grades found for this period, check for grades with the correct semester string
+        // (this handles cases where grades were extracted but linked to wrong period submissions)
+        if (empty($period_grades)) {
+            $semester_sql = "
+                SELECT g.*
+                FROM grades g
+                JOIN grade_submissions gs ON g.submission_id = gs.id
+                WHERE gs.user_id = :user_id
+                AND g.semester_taken = :expected_semester
+                AND gs.status = 'processed'
+            ";
+
+            $semester_stmt = $this->conn->prepare($semester_sql);
+            $semester_stmt->bindParam(':user_id', $user_id);
+            $semester_stmt->bindParam(':expected_semester', $expected_semester_string);
+            $semester_stmt->execute();
+            $period_grades = $semester_stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+
+        return $period_grades;
     }
 
     /**

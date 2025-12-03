@@ -33,9 +33,32 @@ class AcademicPeriod {
 
     public function deactivateExpiredPeriods() {
         try {
+            // Get all active periods that have expired before sending notifications
+            $selectStmt = $this->conn->prepare("SELECT * FROM academic_periods WHERE is_active = 1 AND end_date < CURDATE()");
+            $selectStmt->execute();
+            $expiredPeriods = $selectStmt->fetchAll(PDO::FETCH_ASSOC);
+
             // Deactivate any periods where end_date is before today
             $stmt = $this->conn->prepare("UPDATE academic_periods SET is_active = 0 WHERE is_active = 1 AND end_date < CURDATE()");
-            return $stmt->execute();
+            $result = $stmt->execute();
+
+            // Send notifications for each expired period
+            if ($result && !empty($expiredPeriods)) {
+                require_once 'NotificationManager.php';
+                $notificationManager = new NotificationManager($this->conn);
+
+                foreach ($expiredPeriods as $period) {
+                    $semester = $period['semester'] === '1st' ? '1st' : ($period['semester'] === '2nd' ? '2nd' : ucfirst($period['semester']));
+
+                    // Notify students
+                    $notificationManager->notifyAcademicPeriodExpired($semester, $period['school_year']);
+
+                    // Notify advisers
+                    $notificationManager->notifyAdviserAcademicPeriod($semester, $period['school_year'], $period['end_date'], true);
+                }
+            }
+
+            return $result;
         } catch (PDOException $e) {
             error_log('Failed to deactivate expired periods: ' . $e->getMessage());
             return false;
@@ -153,10 +176,11 @@ class AcademicPeriod {
                 if ($period) {
                     $semester = $period['semester'] === '1st' ? '1st' : ($period['semester'] === '2nd' ? '2nd' : ucfirst($period['semester']));
 
-                    // Send notification to all students
+                    // Send notification to all students and advisers
                     require_once 'NotificationManager.php';
                     $notificationManager = new NotificationManager($this->conn);
                     $notificationManager->notifyAcademicPeriodOpened($semester, $period['school_year'], $period['end_date']);
+                    $notificationManager->notifyAdviserAcademicPeriod($semester, $period['school_year'], $period['end_date'], false);
                 }
                 return true;
             }
@@ -200,10 +224,11 @@ class AcademicPeriod {
                 if ($period) {
                     $semester = $period['semester'] === '1st' ? '1st' : ($period['semester'] === '2nd' ? '2nd' : ucfirst($period['semester']));
 
-                    // Send notification to all students
+                    // Send notification to all students and advisers
                     require_once 'NotificationManager.php';
                     $notificationManager = new NotificationManager($this->conn);
                     $notificationManager->notifyAcademicPeriodOpened($semester, $period['school_year'], $end_date);
+                    $notificationManager->notifyAdviserAcademicPeriod($semester, $period['school_year'], $end_date, false);
                 }
                 return true;
             }

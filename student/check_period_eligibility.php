@@ -41,24 +41,49 @@ $user_stmt->execute();
 $user = $user_stmt->fetch(PDO::FETCH_ASSOC);
 $year_level = $user['year_level'] ?? 1;
 
-// Build semester string for matching grades
-$semester_string = $period['semester'] . ' Semester SY ' . $period['school_year'];
+// Check if student has ANY grades for this period (don't require exact semester string match)
+// This allows for cases where the PDF semester doesn't exactly match the period name
+// Include ALL grades including zero grades (ongoing courses)
 
-// Check if student has grades for this period
+// Build the expected semester string for this period
+$expected_semester_string = $period['semester'] . ' Semester SY ' . $period['school_year'];
+
+// First, check for grades linked to submissions for this specific period (processed status)
 $grades_query = "SELECT g.*, g.semester_taken
                  FROM grades g
                  JOIN grade_submissions gs ON g.submission_id = gs.id
                  WHERE gs.user_id = :user_id
                  AND gs.academic_period_id = :period_id
-                 AND gs.status = 'processed'
-                 AND g.semester_taken = :semester_string";
+                 AND gs.status = 'processed'"; // Include all grades, even zero/ongoing ones
 
 $grades_stmt = $db->prepare($grades_query);
 $grades_stmt->bindParam(':user_id', $user_id);
 $grades_stmt->bindParam(':period_id', $period_id);
-$grades_stmt->bindParam(':semester_string', $semester_string);
 $grades_stmt->execute();
-$grades = $grades_stmt->fetchAll(PDO::FETCH_ASSOC);
+$period_grades = $grades_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// If no grades found for this period, check for grades with the correct semester string
+// (this handles cases where grades were extracted but linked to wrong period)
+if (empty($period_grades)) {
+    $semester_grades_query = "SELECT g.*, g.semester_taken
+                             FROM grades g
+                             JOIN grade_submissions gs ON g.submission_id = gs.id
+                             WHERE gs.user_id = :user_id
+                             AND g.semester_taken = :expected_semester
+                             AND gs.status = 'processed'";
+
+    $semester_grades_stmt = $db->prepare($semester_grades_query);
+    $semester_grades_stmt->bindParam(':user_id', $user_id);
+    $semester_grades_stmt->bindParam(':expected_semester', $expected_semester_string);
+    $semester_grades_stmt->execute();
+    $period_grades = $semester_grades_stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+$grades = $period_grades;
+
+// Debug output
+error_log("Period grades count: " . count($period_grades));
+error_log("Expected semester: " . $expected_semester_string);
 
 $has_grades = !empty($grades);
 

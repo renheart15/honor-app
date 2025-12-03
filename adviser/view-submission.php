@@ -90,10 +90,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $message = 'Failed to extract grades from PDF: ' . ($extractedData['message'] ?? 'Unknown error');
                 $message_type = 'error';
             } else {
-            // Clear existing grades for this submission (in case of re-approval)
-            $clear_query = "DELETE FROM grades WHERE submission_id = :submission_id";
+            // Clear existing grades for this student (replace previous submissions)
+            $clear_query = "DELETE FROM grades WHERE submission_id IN (
+                SELECT id FROM grade_submissions WHERE user_id = :user_id
+            )";
             $clear_stmt = $db->prepare($clear_query);
-            $clear_stmt->bindParam(':submission_id', $submission_id);
+            $clear_stmt->bindParam(':user_id', $submission['user_id']);
             $clear_stmt->execute();
 
             // Insert extracted grades into grades table
@@ -102,17 +104,54 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $insert_stmt = $db->prepare($insert_grade_query);
 
             $grades_inserted = 0;
-            foreach ($extractedData['grades'] as $grade) {
-                $insert_stmt->execute([
-                    ':submission_id' => $submission_id,
-                    ':subject_code' => $grade['subject_code'] ?? '',
-                    ':subject_name' => $grade['subject_name'] ?? '',
-                    ':units' => $grade['units'] ?? 0,
-                    ':grade' => $grade['grade'] ?? 0,
-                    ':semester_taken' => $grade['semester'] ?? '',
-                    ':remarks' => $grade['remarks'] ?? ''
-                ]);
-                $grades_inserted++;
+            $insertion_errors = [];
+
+            // Debug: Log what we're trying to insert
+            error_log("Starting grade insertion for submission ID $submission_id. Total grades to insert: " . count($extractedData['grades']));
+
+            foreach ($extractedData['grades'] as $index => $grade) {
+                // Debug: Log each grade before insertion
+                $gradeData = [
+                    'submission_id' => $submission_id,
+                    'subject_code' => $grade['subject_code'] ?? '',
+                    'subject_name' => $grade['subject_name'] ?? '',
+                    'units' => $grade['units'] ?? 0,
+                    'grade' => $grade['grade'] ?? 0,
+                    'semester_taken' => $grade['semester'] ?? '',
+                    'remarks' => !empty($grade['remarks']) ? $grade['remarks'] : ($grade['grade'] > 0 ? ($grade['grade'] <= 3.0 ? 'PASSED' : 'FAILED') : 'ONGOING')
+                ];
+
+                error_log("Inserting grade " . ($index + 1) . ": " . json_encode($gradeData));
+
+                try {
+                    $insert_stmt->execute($gradeData);
+
+                    // Check if the insertion actually succeeded
+                    if ($insert_stmt->rowCount() > 0) {
+                        $grades_inserted++;
+                        error_log("Grade " . ($index + 1) . " inserted successfully");
+                    } else {
+                        $error_msg = "Grade " . ($index + 1) . " (" . ($grade['subject_code'] ?? 'Unknown') . ") - No rows affected";
+                        $insertion_errors[] = $error_msg;
+                        error_log($error_msg);
+                    }
+                } catch (Exception $e) {
+                    $error_msg = "Grade " . ($index + 1) . " (" . ($grade['subject_code'] ?? 'Unknown') . ") - " . $e->getMessage();
+                    $insertion_errors[] = $error_msg;
+                    error_log($error_msg);
+
+                    // Log the PDO error info if available
+                    if ($insert_stmt->errorCode() != '00000') {
+                        $errorInfo = $insert_stmt->errorInfo();
+                        error_log("PDO Error for grade " . ($index + 1) . ": " . json_encode($errorInfo));
+                    }
+                }
+            }
+
+            // Final summary
+            error_log("Grade insertion completed for submission ID $submission_id: $grades_inserted inserted, " . count($insertion_errors) . " errors");
+            if (!empty($insertion_errors)) {
+                error_log("Grade insertion errors for submission ID $submission_id: " . implode('; ', $insertion_errors));
             }
 
             // Update submission status to processed

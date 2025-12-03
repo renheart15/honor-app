@@ -16,7 +16,7 @@ $gradeProcessor = new GradeProcessor($db);
 
 $user_id = $_SESSION['user_id'];
 
-// Get all student's grades first for GWA calculation
+// Get ALL processed grades from ALL submissions for complete academic history
 $all_grades_query = "
     SELECT g.*, g.semester_taken,
            CASE
@@ -31,7 +31,6 @@ $all_grades_query = "
            END as school_year_taken
     FROM grades g
     JOIN grade_submissions gs ON g.submission_id = gs.id
-    JOIN academic_periods ap ON gs.academic_period_id = ap.id
     WHERE gs.user_id = :user_id
     AND gs.status = 'processed'
     ORDER BY
@@ -44,13 +43,16 @@ $all_grades_query = "
             WHEN g.semester_taken LIKE '%1st%' THEN 2
             WHEN g.semester_taken LIKE '%Summer%' OR g.semester_taken LIKE '%summer%' THEN 3
             ELSE 4
-        END ASC
+        END ASC,
+        g.subject_code ASC
 ";
 
 $all_grades_stmt = $db->prepare($all_grades_query);
 $all_grades_stmt->bindParam(':user_id', $user_id);
 $all_grades_stmt->execute();
 $all_grades = $all_grades_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+
 
 // Calculate overall GWA from actual grades displayed on the page
 $overall_gwa_data = null;
@@ -413,8 +415,16 @@ uksort($grades_by_semester, function($a, $b) {
                                                                 </span>
                                                             </td>
                                                             <td class="px-6 py-4 whitespace-nowrap">
-                                                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <?php echo $grade['remarks'] === 'PASSED' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'; ?>">
-                                                                    <?php echo htmlspecialchars($grade['remarks'] ?: 'N/A'); ?>
+                                                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <?php
+                                                                    $remarks = !empty($grade['remarks']) ? $grade['remarks'] : ($grade['grade'] > 0 ? ($grade['grade'] <= 3.0 ? 'PASSED' : 'FAILED') : 'ONGOING');
+                                                                    $isPassed = $remarks === 'PASSED';
+                                                                    $isOngoing = $remarks === 'ONGOING';
+                                                                    echo $isPassed ? 'bg-green-100 text-green-800' : ($isOngoing ? 'bg-blue-100 text-blue-800' : 'bg-red-100 text-red-800');
+                                                                ?>">
+                                                                    <?php
+                                                                    $remarks = !empty($grade['remarks']) ? $grade['remarks'] : ($grade['grade'] > 0 ? ($grade['grade'] <= 3.0 ? 'PASSED' : 'FAILED') : 'ONGOING');
+                                                                    echo htmlspecialchars($remarks);
+                                                                    ?>
                                                                 </span>
                                                             </td>
                                                         </tr>

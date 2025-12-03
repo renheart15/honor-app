@@ -12,74 +12,26 @@ $db = $database->getConnection();
 $gradeProcessor = new GradeProcessor($db);
 $notificationManager = new NotificationManager($db);
 
+// Get ALL student's grades across all periods for dashboard overview
 $user_id = $_SESSION['user_id'];
-$current_period = 1; // Get current academic period
 
-// Get student's grades
-$grades = $gradeProcessor->getStudentGrades($user_id, $current_period);
+// Get all processed grades for the student
+$all_grades_query = "
+    SELECT g.*, ap.period_name, gs.academic_period_id
+    FROM grades g
+    JOIN grade_submissions gs ON g.submission_id = gs.id
+    JOIN academic_periods ap ON gs.academic_period_id = ap.id
+    WHERE gs.user_id = :user_id
+    AND gs.status = 'processed'
+    ORDER BY ap.school_year DESC, ap.semester DESC, g.subject_code ASC
+";
 
-// Calculate GWA directly from grades table for accuracy (like grades.php)
-$gwa_data = null;
-if ($current_period) {
-    // Get the academic period info to build the correct semester filter
-    $period_info_query = "SELECT semester, school_year FROM academic_periods WHERE id = :current_period";
-    $period_info_stmt = $db->prepare($period_info_query);
-    $period_info_stmt->bindParam(':current_period', $current_period);
-    $period_info_stmt->execute();
-    $period_info = $period_info_stmt->fetch(PDO::FETCH_ASSOC);
+$all_grades_stmt = $db->prepare($all_grades_query);
+$all_grades_stmt->bindParam(':user_id', $user_id);
+$all_grades_stmt->execute();
+$grades = $all_grades_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    if ($period_info) {
-        // Build semester string to match grades table format (e.g., "1st Semester SY 2024-2025")
-        $current_semester_filter = $period_info['semester'] . ' Semester SY ' . $period_info['school_year'];
-
-        $current_gwa_query = "
-            SELECT g.*, g.semester_taken
-            FROM grades g
-            JOIN grade_submissions gs ON g.submission_id = gs.id
-            WHERE gs.user_id = :user_id
-            AND gs.academic_period_id = :current_period
-            AND gs.status = 'processed'
-            AND g.semester_taken = :semester_filter
-        ";
-
-        $current_gwa_stmt = $db->prepare($current_gwa_query);
-        $current_gwa_stmt->bindParam(':user_id', $user_id);
-        $current_gwa_stmt->bindParam(':current_period', $current_period);
-        $current_gwa_stmt->bindParam(':semester_filter', $current_semester_filter);
-        $current_gwa_stmt->execute();
-        $current_period_grades = $current_gwa_stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        if (!empty($current_period_grades)) {
-            $total_grade_points = 0;
-            $total_units = 0;
-            $valid_grades_count = 0;
-
-            foreach ($current_period_grades as $grade) {
-                // Skip NSTP subjects and ongoing subjects (grade = 0) from GWA calculation
-                if (strpos($grade['subject_name'], 'NSTP') !== false ||
-                    strpos($grade['subject_name'], 'NATIONAL SERVICE TRAINING') !== false ||
-                    $grade['grade'] == 0) {
-                    continue;
-                }
-
-                $total_grade_points += ($grade['grade'] * $grade['units']);
-                $total_units += $grade['units'];
-                $valid_grades_count++;
-            }
-
-            if ($total_units > 0) {
-                $gwa_exact = $total_grade_points / $total_units;
-                $gwa_calculated = floor($gwa_exact * 100) / 100; // Apply proper truncation
-                $gwa_data = [
-                    'gwa' => $gwa_calculated,
-                    'total_units' => $total_units,
-                    'subjects_count' => $valid_grades_count,
-                    'calculated_at' => date('Y-m-d H:i:s')
-                ];
-            }
-        }
-    }
-}
+// GWA data is now calculated from all grades below
 
 // Calculate overall GWA (across all periods) for dashboard display
 $overall_gwa_data = null;

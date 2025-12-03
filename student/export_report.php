@@ -264,7 +264,7 @@ $websiteRun->addText('tuburan.campus@ctu.edu.ph', [
 
 // Phone line
 $middleCell->addText(
-    'Phone: +6332 463 9313 loc. 1512',
+    'Phone: +6332 463 9313 loc. 1523',
     ['size' => 9, 'name' => 'Arial'],
     $noSpace
 );

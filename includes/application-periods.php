@@ -108,44 +108,37 @@ function canStudentApply($db, $student_id) {
 
     $department = $user['department'];
 
-    // Check if application period is open - use academic_periods instead of application_periods
-    // Academic periods control when applications can be submitted
-    $query = "SELECT * FROM academic_periods
-              WHERE is_active = 1
-              AND end_date >= CURDATE()
+    // Check if application period is open - use application_periods table
+    // Application periods control when honor applications can be submitted
+    $query = "SELECT * FROM application_periods
+              WHERE department = :department
+              AND status = 'open'
               ORDER BY end_date DESC
               LIMIT 1";
 
     $stmt = $db->prepare($query);
+    $stmt->bindParam(':department', $department);
     $stmt->execute();
     $active_period = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$active_period) {
         return [
             'can_apply' => false,
-            'reason' => 'No active academic periods available for applications'
+            'reason' => 'No open application periods available for your department'
         ];
     }
 
-    // Check if student already has a pending/approved application for this period
-    $query = "SELECT COUNT(*) as count FROM honor_applications
-              WHERE user_id = :student_id
-              AND academic_period_id = :academic_period_id
-              AND status IN ('submitted', 'under_review', 'approved', 'final_approved')";
-
-    $stmt = $db->prepare($query);
-    $stmt->bindParam(':student_id', $student_id);
-    $stmt->bindParam(':academic_period_id', $active_period['id']);
-    $stmt->execute();
-    $existing = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    if ($existing['count'] > 0) {
+    // Check if current date is within the application period
+    $current_date = date('Y-m-d');
+    if ($current_date < $active_period['start_date'] || $current_date > $active_period['end_date']) {
         return [
             'can_apply' => false,
-            'reason' => 'You already have an application for the current academic period',
+            'reason' => 'Current application period is not active (outside date range)',
             'active_period' => $active_period
         ];
     }
+
+    // Allow multiple applications - removed restriction for existing applications
 
     return [
         'can_apply' => true,

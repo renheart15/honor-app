@@ -78,7 +78,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         $application_data = $get_app_stmt->fetch(PDO::FETCH_ASSOC);
 
         $query = "UPDATE honor_applications
-                  SET status = 'rejected', reviewed_at = NOW(), reviewed_by = :adviser_id, rejection_reason = :reason
+                  SET status = 'denied', reviewed_at = NOW(), reviewed_by = :adviser_id, rejection_reason = :reason
                   WHERE id = :application_id";
         $stmt = $db->prepare($query);
         $stmt->bindParam(':adviser_id', $adviser_id);
@@ -95,6 +95,66 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         } else {
             $message = 'Failed to reject application.';
             $message_type = 'error';
+        }
+    } elseif ($action === 'remove') {
+        // FEATURE: Remove/Decline approved applications
+        $removal_reason = $_POST['removal_reason'] ?? '';
+
+        // Get application details first
+        $get_app_query = "SELECT user_id, application_type, status FROM honor_applications WHERE id = :application_id";
+        $get_app_stmt = $db->prepare($get_app_query);
+        $get_app_stmt->bindParam(':application_id', $application_id);
+        $get_app_stmt->execute();
+        $application_data = $get_app_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$application_data) {
+            $message = 'Application not found.';
+            $message_type = 'error';
+        } elseif ($application_data['status'] !== 'approved') {
+            $message = 'Can only remove approved applications.';
+            $message_type = 'error';
+        } else {
+            // Remove the approved application
+            // Using 'cancelled' status (compatible with current database schema)
+            $query = "UPDATE honor_applications
+                      SET status = 'cancelled',
+                          reviewed_at = NOW(),
+                          reviewed_by = :adviser_id,
+                          rejection_reason = :reason,
+                          ineligibility_reasons = CONCAT(COALESCE(ineligibility_reasons, ''),
+                                IF(LENGTH(COALESCE(ineligibility_reasons, '')) > 0, '; ', ''),
+                                'Removed by adviser on ', NOW())
+                      WHERE id = :application_id";
+            $stmt = $db->prepare($query);
+            $stmt->bindParam(':adviser_id', $adviser_id);
+            $stmt->bindParam(':application_id', $application_id);
+            $stmt->bindParam(':reason', $removal_reason);
+
+            if ($stmt->execute()) {
+                // Notify student about removal
+                $notificationManager = new NotificationManager($db);
+                $type_labels = [
+                    'deans_list' => "Dean's List",
+                    'cum_laude' => 'Cum Laude',
+                    'magna_cum_laude' => 'Magna Cum Laude',
+                    'summa_cum_laude' => 'Summa Cum Laude'
+                ];
+                $honor_type = $type_labels[$application_data['application_type']] ?? $application_data['application_type'];
+
+                $notificationManager->createNotification(
+                    $application_data['user_id'],
+                    'Application Removed',
+                    "Your approved application for $honor_type has been removed by your adviser. Reason: " . ($removal_reason ?: 'No reason provided'),
+                    'warning',
+                    'application'
+                );
+
+                $message = 'Approved application removed successfully!';
+                $message_type = 'success';
+            } else {
+                $message = 'Failed to remove application.';
+                $message_type = 'error';
+            }
         }
     }
 }
@@ -428,7 +488,19 @@ if ($filter !== 'all') {
                                                             </div>
                                                             <?php if (!$application['is_eligible'] && $application['ineligibility_reasons']): ?>
                                                                 <div class="mt-1 text-xs text-amber-700 font-medium">
-                                                                    ⚠ <?php echo htmlspecialchars($application['ineligibility_reasons']); ?>
+                                                                    ⚠ <?php
+                                                                    // Update the ineligibility message to show current GWA instead of historical value
+                                                                    $ineligibility_message = $application['ineligibility_reasons'];
+                                                                    if ($application['period_specific_gwa'] !== null) {
+                                                                        // Replace any GWA value in the message with the current calculated GWA
+                                                                        $ineligibility_message = preg_replace(
+                                                                            '/GWA of \d+\.\d+/',
+                                                                            'GWA of ' . formatGWA($application['period_specific_gwa']),
+                                                                            $ineligibility_message
+                                                                        );
+                                                                    }
+                                                                    echo htmlspecialchars($ineligibility_message);
+                                                                    ?>
                                                                 </div>
                                                             <?php endif; ?>
                                                         </div>
@@ -479,6 +551,12 @@ if ($filter !== 'all') {
                                                                 Reject
                                                             </button>
                                                         </div>
+                                                    <?php elseif ($application['status'] === 'approved'): ?>
+                                                        <button onclick="showRemoveModal(<?php echo $application['id']; ?>)"
+                                                                class="inline-flex items-center px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium rounded-lg transition-colors">
+                                                            <i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>
+                                                            Remove
+                                                        </button>
                                                     <?php else: ?>
                                                         <span class="inline-flex items-center px-3 py-1.5 bg-gray-100 text-gray-500 text-xs font-medium rounded-lg">
                                                             <i data-lucide="lock" class="w-3 h-3 mr-1"></i>
@@ -532,6 +610,49 @@ if ($filter !== 'all') {
         </div>
     </div>
 
+    <!-- Remove Application Modal -->
+    <div id="removeModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 z-50 hidden flex items-center justify-center">
+        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-2xl bg-white">
+            <div class="mt-3">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-gray-900">Remove Approved Application</h3>
+                    <button onclick="hideRemoveModal()" class="text-gray-400 hover:text-gray-600">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+                <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+                    <div class="flex">
+                        <i data-lucide="alert-triangle" class="w-5 h-5 text-amber-600 mr-2 flex-shrink-0"></i>
+                        <p class="text-sm text-amber-800">
+                            <strong>Warning:</strong> This will remove an already approved application. The student will be notified.
+                        </p>
+                    </div>
+                </div>
+                <form method="POST">
+                    <input type="hidden" name="application_id" id="removeApplicationId">
+                    <input type="hidden" name="action" value="remove">
+                    <div class="mb-4">
+                        <label for="removal_reason" class="block text-sm font-semibold text-gray-700 mb-2">Reason for Removal</label>
+                        <textarea id="removal_reason" name="removal_reason" rows="3" required
+                                  class="block w-full px-3 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition-colors"
+                                  placeholder="Please provide a reason for removing this approved application..."></textarea>
+                        <p class="mt-1 text-xs text-gray-500">The student will see this reason in their notification.</p>
+                    </div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="hideRemoveModal()"
+                                class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl transition-colors">
+                            Cancel
+                        </button>
+                        <button type="submit"
+                                class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl transition-colors">
+                            Remove Application
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <script>
         lucide.createIcons();
 
@@ -559,6 +680,16 @@ if ($filter !== 'all') {
 
         function hideRejectModal() {
             document.getElementById('rejectModal').classList.add('hidden');
+        }
+
+        function showRemoveModal(applicationId) {
+            document.getElementById('removeApplicationId').value = applicationId;
+            document.getElementById('removeModal').classList.remove('hidden');
+            lucide.createIcons();
+        }
+
+        function hideRemoveModal() {
+            document.getElementById('removeModal').classList.add('hidden');
         }
 
         // Notification System

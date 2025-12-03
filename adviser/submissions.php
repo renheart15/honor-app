@@ -90,8 +90,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     $clear_stmt->bindParam(':submission_id', $submission_id);
                     $clear_stmt->execute();
 
-                    // Insert extracted grades into grades table
-                    $insert_grade_query = "INSERT INTO grades (submission_id, subject_code, subject_name, units, grade, semester_taken)
+            // Insert extracted grades into grades table
+            $insert_grade_query = "INSERT INTO grades (submission_id, subject_code, subject_name, units, grade, semester_taken)
                                           VALUES (:submission_id, :subject_code, :subject_name, :units, :grade, :semester_taken)";
                     $insert_stmt = $db->prepare($insert_grade_query);
 

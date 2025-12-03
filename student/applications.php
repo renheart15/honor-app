@@ -1,24 +1,45 @@
 <?php
+// Debug: Very early logging before anything else
+error_log("DEBUG: applications.php started - REQUEST_METHOD: " . ($_SERVER['REQUEST_METHOD'] ?? 'unknown'));
+error_log("DEBUG: Session status: " . session_status());
+error_log("DEBUG: Session data: " . json_encode($_SESSION ?? []));
+error_log("DEBUG: POST data: " . json_encode($_POST ?? []));
+
 session_start();
+error_log("DEBUG: After session_start - Session data: " . json_encode($_SESSION ?? []));
+
 require_once '../config/config.php';
+error_log("DEBUG: Config loaded successfully");
+
 require_once '../classes/GradeProcessor.php'; // Contains the GradeProcessor class definition
 require_once '../includes/application-periods.php'; // Helper functions for application periods
+error_log("DEBUG: Required files loaded successfully");
 
 $database = new Database();
 $db = $database->getConnection();
+error_log("DEBUG: Database connection established");
 
 // Verify that the user is logged in
+error_log("DEBUG: About to call requireLogin()");
 requireLogin();
+error_log("DEBUG: requireLogin() passed successfully");
 
 $message = '';
 $message_type = '';
 
 // Handle form submission
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
+    // Debug: Log form submission start
+    error_log("DEBUG: Application submission started - User: " . ($_SESSION['user_id'] ?? 'unknown') . ", POST: " . json_encode($_POST));
+
     $user_id = $_SESSION['user_id'];
     $application_type = $_POST['application_type'] ?? '';
     $selected_period_id = $_POST['academic_period_id'] ?? null;
 
+    // Debug: Log parsed values
+    error_log("DEBUG: Parsed values - user_id: $user_id, application_type: $application_type, selected_period_id: $selected_period_id");
+
+    // Validate inputs
     if (empty($application_type)) {
         $message = 'Please select an honor type.';
         $message_type = 'error';
@@ -40,320 +61,420 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
             // Build semester string for matching grades
             $semester_string = $selected_period['semester'] . ' Semester SY ' . $selected_period['school_year'];
 
-            // Check if student has grades for this period
+                    // Check if student has grades for this period
             $grades_check_query = "SELECT COUNT(*) as grade_count
                                    FROM grades g
                                    JOIN grade_submissions gs ON g.submission_id = gs.id
                                    WHERE gs.user_id = :user_id
-                                   AND gs.academic_period_id = :period_id
                                    AND gs.status = 'processed'
                                    AND g.semester_taken = :semester_string";
 
             $grades_check_stmt = $db->prepare($grades_check_query);
             $grades_check_stmt->bindParam(':user_id', $user_id);
-            $grades_check_stmt->bindParam(':period_id', $selected_period_id);
             $grades_check_stmt->bindParam(':semester_string', $semester_string);
             $grades_check_stmt->execute();
             $grades_check = $grades_check_stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($grades_check['grade_count'] == 0) {
-                $message = 'You do not have any grades submitted for the selected academic period. Please upload your grades first.';
-                $message_type = 'error';
-            } else {
-                // Check if user already has a pending application for this period and type
-            $check_query = "SELECT COUNT(*) as count FROM honor_applications
-                           WHERE user_id = :user_id
-                           AND academic_period_id = :period_id
-                           AND application_type = :application_type
-                           AND status IN ('submitted', 'under_review', 'approved', 'final_approved')";
-            $check_stmt = $db->prepare($check_query);
-            $check_stmt->bindParam(':user_id', $user_id);
-            $check_stmt->bindParam(':period_id', $selected_period_id);
-            $check_stmt->bindParam(':application_type', $application_type);
-            $check_stmt->execute();
-            $existing = $check_stmt->fetch(PDO::FETCH_ASSOC);
+                    // Check what periods the student CAN apply for
+                $available_periods_query = "
+                    SELECT ap.period_name
+                    FROM academic_periods ap
+                    WHERE ap.is_active = 1
+                    AND EXISTS (
+                        SELECT 1 FROM grades g
+                        JOIN grade_submissions gs ON g.submission_id = gs.id
+                        WHERE gs.user_id = :user_id
+                        AND gs.status = 'processed'
+                        AND g.semester_taken = CONCAT(ap.semester, ' Semester SY ', ap.school_year)
+                    )
+                    ORDER BY ap.school_year DESC, ap.semester DESC
+                ";
+                $available_periods_stmt = $db->prepare($available_periods_query);
+                $available_periods_stmt->bindParam(':user_id', $user_id);
+                $available_periods_stmt->execute();
+                $available_periods = $available_periods_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            if ($existing['count'] > 0) {
-                $message = 'You already have a pending application for this period and honor type.';
+                $period_list = array_column($available_periods, 'period_name');
+                $available_text = !empty($period_list) ? 'Available periods: ' . implode(', ', $period_list) : 'No periods available';
+
+                $message = 'You do not have any grades submitted for the selected academic period. ' . $available_text;
                 $message_type = 'error';
             } else {
-                // Get student's GWA for the selected period using accurate calculation
+                // Process application submission
                 $current_period = $selected_period_id;
-                $gwa_data_for_submission = null;
 
+                // Calculate GWA for submission - use grades with matching semester_taken
                 $submission_gwa_query = "
                     SELECT g.*, g.semester_taken
                     FROM grades g
                     JOIN grade_submissions gs ON g.submission_id = gs.id
                     WHERE gs.user_id = :user_id
-                    AND gs.academic_period_id = :current_period
                     AND gs.status = 'processed'
+                    AND g.semester_taken = :semester_string
                 ";
 
                 $submission_gwa_stmt = $db->prepare($submission_gwa_query);
                 $submission_gwa_stmt->bindParam(':user_id', $user_id);
-                $submission_gwa_stmt->bindParam(':current_period', $current_period);
+                $submission_gwa_stmt->bindParam(':semester_string', $semester_string);
                 $submission_gwa_stmt->execute();
                 $submission_grades = $submission_gwa_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-                if (!empty($submission_grades)) {
+                if (empty($submission_grades)) {
+                    $message = 'Unable to calculate GWA. Please contact administrator.';
+                    $message_type = 'error';
+                } else {
+                    // Calculate GWA
                     $total_grade_points = 0;
                     $total_units = 0;
                     $valid_grades_count = 0;
 
                     foreach ($submission_grades as $grade) {
-                        // Skip NSTP subjects and ongoing subjects (grade = 0) from GWA calculation
                         if (strpos($grade['subject_name'], 'NSTP') !== false ||
                             strpos($grade['subject_name'], 'NATIONAL SERVICE TRAINING') !== false ||
                             $grade['grade'] == 0) {
                             continue;
                         }
-
                         $total_grade_points += ($grade['grade'] * $grade['units']);
                         $total_units += $grade['units'];
                         $valid_grades_count++;
                     }
 
-                    if ($total_units > 0) {
+                    if ($total_units == 0) {
+                        $message = 'No valid grades found for GWA calculation.';
+                        $message_type = 'error';
+                    } else {
                         $gwa_exact = $total_grade_points / $total_units;
-                        $gwa_calculated = floor($gwa_exact * 100) / 100; // Apply proper truncation
-                        $gwa_data_for_submission = [
-                            'gwa' => $gwa_calculated,
-                            'total_units' => $total_units,
-                            'subjects_count' => $valid_grades_count,
-                            'id' => 1 // Dummy ID for compatibility
+                        $gwa_achieved = floor($gwa_exact * 100) / 100;
+
+                        // Check for grades above 2.5 (needed for GWA calculation insert)
+                        $grade_check_query = "SELECT COUNT(*) as count FROM grades g
+                                              JOIN grade_submissions gs ON g.submission_id = gs.id
+                                              WHERE gs.user_id = :user_id
+                                              AND gs.academic_period_id = :academic_period_id
+                                              AND g.grade > 2.5
+                                              AND gs.status = 'processed'";
+                        $grade_check_stmt = $db->prepare($grade_check_query);
+                        $grade_check_stmt->bindParam(':user_id', $user_id);
+                        $grade_check_stmt->bindParam(':academic_period_id', $current_period);
+                        $grade_check_stmt->execute();
+                        $grade_check = $grade_check_stmt->fetch(PDO::FETCH_ASSOC);
+                        $has_grade_above_25 = ($grade_check['count'] > 0);
+
+                        // Check eligibility
+                        $ineligibility_reasons = [];
+                        $is_eligible = true;
+
+                        $required_gwa_map = [
+                            'deans_list' => 1.75,
+                            'cum_laude' => 1.75,
+                            'magna_cum_laude' => 1.45,
+                            'summa_cum_laude' => 1.25
                         ];
-                    }
-                }
-            }
+                        $required_gwa = $required_gwa_map[$application_type] ?? 1.75;
 
-            if ($gwa_data_for_submission) {
-                // Validate required data
-                if (!$current_period || !is_numeric($current_period)) {
-                    $message = 'Invalid academic period. Please contact administrator.';
-                    $message_type = 'error';
-                } else {
-                    // Check eligibility and build ineligibility reasons
-                    $ineligibility_reasons = [];
-                    $is_eligible = true;
-
-                    // Check GWA requirement based on application type
-                    $required_gwa_map = [
-                        'deans_list' => 1.75,
-                        'cum_laude' => 1.75,
-                        'magna_cum_laude' => 1.45,
-                        'summa_cum_laude' => 1.25
-                    ];
-                    $required_gwa = $required_gwa_map[$application_type] ?? 1.75;
-
-                    $gwa_achieved = $gwa_data_for_submission['gwa'];
-
-                    if ($gwa_achieved > $required_gwa) {
-                        $is_eligible = false;
-                        $ineligibility_reasons[] = "GWA of " . formatGWA($gwa_achieved) . " exceeds required " . formatGWA($required_gwa);
-                    }
-
-                    // Check for grades above 2.5
-                    $grade_check_query = "SELECT COUNT(*) as count FROM grades g
-                                          JOIN grade_submissions gs ON g.submission_id = gs.id
-                                          WHERE gs.user_id = :user_id
-                                          AND g.grade > 2.5
-                                          AND gs.status = 'processed'";
-                    $grade_check_stmt = $db->prepare($grade_check_query);
-                    $grade_check_stmt->bindParam(':user_id', $user_id);
-                    $grade_check_stmt->execute();
-                    $grade_check = $grade_check_stmt->fetch(PDO::FETCH_ASSOC);
-
-                    if ($grade_check['count'] > 0) {
-                        $is_eligible = false;
-                        $ineligibility_reasons[] = "Has " . $grade_check['count'] . " grade(s) above 2.5";
-                    }
-
-                    // Check Latin Honors specific requirements
-                    if (in_array($application_type, ['cum_laude', 'magna_cum_laude', 'summa_cum_laude'])) {
-                        if ($total_semesters < 8) {
+                        if ($gwa_achieved > $required_gwa) {
                             $is_eligible = false;
-                            $ineligibility_reasons[] = "Only completed " . $total_semesters . " semesters (requires 8)";
+                            $ineligibility_reasons[] = "GWA of " . formatGWA($gwa_achieved) . " exceeds required " . formatGWA($required_gwa);
                         }
 
-                        // Check for ongoing grades
-                        $ongoing_check_query = "SELECT COUNT(*) as count FROM grades g
-                                               JOIN grade_submissions gs ON g.submission_id = gs.id
-                                               WHERE gs.user_id = :user_id
-                                               AND g.grade = 0.00
-                                               AND gs.status = 'processed'";
-                        $ongoing_check_stmt = $db->prepare($ongoing_check_query);
-                        $ongoing_check_stmt->bindParam(':user_id', $user_id);
-                        $ongoing_check_stmt->execute();
-                        $ongoing_check = $ongoing_check_stmt->fetch(PDO::FETCH_ASSOC);
-
-                        if ($ongoing_check['count'] > 0) {
+                        if ($has_grade_above_25) {
                             $is_eligible = false;
-                            $ineligibility_reasons[] = "Has " . $ongoing_check['count'] . " ongoing grade(s) (0.00)";
+                            $ineligibility_reasons[] = "Has " . $grade_check['count'] . " grade(s) above 2.5";
                         }
-                    }
 
-                    // Insert the application (allow even if not eligible)
-                    $ineligibility_details = !empty($ineligibility_reasons) ? implode("; ", $ineligibility_reasons) : null;
+                        // Check Latin Honors requirements
+                        if (in_array($application_type, ['cum_laude', 'magna_cum_laude', 'summa_cum_laude'])) {
+                            // Get semester count
+                            $semester_query = "
+                                SELECT COUNT(DISTINCT g.semester_taken) as semesters
+                                FROM grades g
+                                JOIN grade_submissions gs ON g.submission_id = gs.id
+                                WHERE gs.user_id = :user_id AND gs.status = 'processed'
+                                AND (g.semester_taken LIKE '%1st Semester%' OR g.semester_taken LIKE '%2nd Semester%')
+                            ";
+                            $semester_stmt = $db->prepare($semester_query);
+                            $semester_stmt->bindParam(':user_id', $user_id);
+                            $semester_stmt->execute();
+                            $semester_data = $semester_stmt->fetch(PDO::FETCH_ASSOC);
+                            $total_semesters = $semester_data['semesters'] ?? 0;
 
-                    $insert_query = "INSERT INTO honor_applications
-                                   (user_id, academic_period_id, gwa_calculation_id, application_type, gwa_achieved, required_gwa, status, is_eligible, ineligibility_reasons)
-                                   VALUES (:user_id, :academic_period_id, :gwa_calculation_id, :application_type, :gwa_achieved, :required_gwa, 'submitted', :is_eligible, :ineligibility_reasons)";
-                    $insert_stmt = $db->prepare($insert_query);
-
-                    // Create or get GWA calculation record
-
-                    // Check if a GWA calculation record exists for this user and period
-                    $check_gwa_query = "SELECT id FROM gwa_calculations WHERE user_id = :user_id AND academic_period_id = :academic_period_id";
-                    $check_gwa_stmt = $db->prepare($check_gwa_query);
-                    $check_gwa_stmt->bindParam(':user_id', $user_id);
-                    $check_gwa_stmt->bindParam(':academic_period_id', $current_period);
-                    $check_gwa_stmt->execute();
-                    $existing_calculation = $check_gwa_stmt->fetch(PDO::FETCH_ASSOC);
-
-                    if ($existing_calculation) {
-                        $gwa_calculation_id = $existing_calculation['id'];
-
-                        // Update the existing calculation with accurate GWA
-                        $total_units = $gwa_data_for_submission['total_units'];
-                        $subjects_count = $gwa_data_for_submission['subjects_count'];
-                        $total_grade_points = $total_units * $gwa_achieved;
-
-                        $update_gwa_query = "UPDATE gwa_calculations
-                                           SET gwa = :gwa, total_units = :total_units, subjects_count = :subjects_count,
-                                               total_grade_points = :total_grade_points, recalculated_at = NOW()
-                                           WHERE id = :id";
-                        $update_gwa_stmt = $db->prepare($update_gwa_query);
-                        $update_gwa_stmt->bindParam(':gwa', $gwa_achieved);
-                        $update_gwa_stmt->bindParam(':total_units', $total_units);
-                        $update_gwa_stmt->bindParam(':subjects_count', $subjects_count);
-                        $update_gwa_stmt->bindParam(':total_grade_points', $total_grade_points);
-                        $update_gwa_stmt->bindParam(':id', $gwa_calculation_id);
-                        $update_gwa_stmt->execute();
-                    } else {
-                        // Create a new GWA calculation record
-                        $insert_gwa_query = "INSERT INTO gwa_calculations
-                                           (user_id, academic_period_id, total_units, total_grade_points, gwa, subjects_count,
-                                            failed_subjects, incomplete_subjects, has_grade_above_25, calculation_method, calculated_at)
-                                           VALUES
-                                           (:user_id, :academic_period_id, :total_units, :total_grade_points, :gwa, :subjects_count,
-                                            0, 0, 0, 'direct_calculation', NOW())";
-
-                        // Prepare variables for binding (cannot bind expressions directly)
-                        $total_units = $gwa_data_for_submission['total_units'];
-                        $subjects_count = $gwa_data_for_submission['subjects_count'];
-                        $total_grade_points = $total_units * $gwa_achieved;
-
-                        $insert_gwa_stmt = $db->prepare($insert_gwa_query);
-                        $insert_gwa_stmt->bindParam(':user_id', $user_id);
-                        $insert_gwa_stmt->bindParam(':academic_period_id', $current_period);
-                        $insert_gwa_stmt->bindParam(':total_units', $total_units);
-                        $insert_gwa_stmt->bindParam(':total_grade_points', $total_grade_points);
-                        $insert_gwa_stmt->bindParam(':gwa', $gwa_achieved);
-                        $insert_gwa_stmt->bindParam(':subjects_count', $subjects_count);
-
-                        if ($insert_gwa_stmt->execute()) {
-                            $gwa_calculation_id = $db->lastInsertId();
-                        } else {
-                            $message = 'Failed to create GWA calculation record.';
-                            $message_type = 'error';
-                            $gwa_calculation_id = null;
-                        }
-                    }
-
-                    // Only proceed with application submission if we have a valid GWA calculation ID
-                    if ($gwa_calculation_id) {
-
-                    // Check if application already exists for this user, period, and type
-                    $check_existing_query = "SELECT id FROM honor_applications
-                                            WHERE user_id = :user_id
-                                            AND academic_period_id = :academic_period_id
-                                            AND application_type = :application_type";
-                    $check_existing_stmt = $db->prepare($check_existing_query);
-                    $check_existing_stmt->bindParam(':user_id', $user_id);
-                    $check_existing_stmt->bindParam(':academic_period_id', $current_period);
-                    $check_existing_stmt->bindParam(':application_type', $application_type);
-                    $check_existing_stmt->execute();
-                    $existing_app = $check_existing_stmt->fetch(PDO::FETCH_ASSOC);
-
-                    if ($existing_app) {
-                        // Update existing application instead of inserting
-                        $update_query = "UPDATE honor_applications
-                                        SET gwa_calculation_id = :gwa_calculation_id,
-                                            gwa_achieved = :gwa_achieved,
-                                            required_gwa = :required_gwa,
-                                            is_eligible = :is_eligible,
-                                            ineligibility_reasons = :ineligibility_reasons,
-                                            submitted_at = NOW(),
-                                            status = 'submitted'
-                                        WHERE id = :id";
-                        $update_stmt = $db->prepare($update_query);
-                        $update_stmt->bindParam(':id', $existing_app['id']);
-                        $update_stmt->bindParam(':gwa_calculation_id', $gwa_calculation_id);
-                        $update_stmt->bindParam(':gwa_achieved', $gwa_achieved);
-                        $update_stmt->bindParam(':required_gwa', $required_gwa);
-                        $update_stmt->bindParam(':is_eligible', $is_eligible, PDO::PARAM_BOOL);
-                        $update_stmt->bindParam(':ineligibility_reasons', $ineligibility_details);
-
-                        $execution_result = $update_stmt->execute();
-                    } else {
-                        // Insert new application
-                        $insert_stmt->bindParam(':user_id', $user_id);
-                        $insert_stmt->bindParam(':academic_period_id', $current_period);
-                        $insert_stmt->bindParam(':gwa_calculation_id', $gwa_calculation_id);
-                        $insert_stmt->bindParam(':application_type', $application_type);
-                        $insert_stmt->bindParam(':gwa_achieved', $gwa_achieved);
-                        $insert_stmt->bindParam(':required_gwa', $required_gwa);
-                        $insert_stmt->bindParam(':is_eligible', $is_eligible, PDO::PARAM_BOOL);
-                        $insert_stmt->bindParam(':ineligibility_reasons', $ineligibility_details);
-
-                        $execution_result = $insert_stmt->execute();
-                    }
-
-                        if ($execution_result) {
-                            // Notify adviser if student is not eligible
-                            if (!$is_eligible) {
-                                // Get student's adviser
-                                $adviser_query = "SELECT id FROM users WHERE role = 'adviser' AND department = :department AND status = 'active' LIMIT 1";
-                                $adviser_stmt = $db->prepare($adviser_query);
-                                $adviser_stmt->bindParam(':department', $_SESSION['department']);
-                                $adviser_stmt->execute();
-                                $adviser = $adviser_stmt->fetch(PDO::FETCH_ASSOC);
-
-                                if ($adviser) {
-                                    require_once '../classes/NotificationManager.php';
-                                    $notificationManager = new NotificationManager($db);
-
-                                    $student_name = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
-                                    $type_labels = [
-                                        'deans_list' => "Dean's List",
-                                        'cum_laude' => 'Cum Laude',
-                                        'magna_cum_laude' => 'Magna Cum Laude',
-                                        'summa_cum_laude' => 'Summa Cum Laude'
-                                    ];
-                                    $honor_type = $type_labels[$application_type] ?? $application_type;
-
-                                    $notification_title = "Ineligible Application Submitted";
-                                    $notification_message = "$student_name submitted an application for $honor_type but is NOT ELIGIBLE. Reasons: " . $ineligibility_details;
-
-                                    $notificationManager->createNotification(
-                                        $adviser['id'],
-                                        $notification_title,
-                                        $notification_message,
-                                        'warning',
-                                        'application'
-                                    );
-                                }
+                            if ($total_semesters < 8) {
+                                $is_eligible = false;
+                                $ineligibility_reasons[] = "Only completed " . $total_semesters . " semesters (requires 8)";
                             }
 
-                            $action = $existing_app ? 'updated' : 'submitted';
-                            $message = 'Honor application ' . $action . ' successfully!' . ($is_eligible ? '' : ' Note: Your application does not meet eligibility requirements. Your adviser has been notified.');
-                            $message_type = 'success';
-                        } else {
-                            $message = 'Failed to submit application. Please try again.';
-                            $message_type = 'error';
+                            // Check for ongoing grades
+                            $ongoing_query = "SELECT COUNT(*) as count FROM grades g
+                                             JOIN grade_submissions gs ON g.submission_id = gs.id
+                                             WHERE gs.user_id = :user_id AND g.grade = 0.00 AND gs.status = 'processed'";
+                            $ongoing_stmt = $db->prepare($ongoing_query);
+                            $ongoing_stmt->bindParam(':user_id', $user_id);
+                            $ongoing_stmt->execute();
+                            $ongoing = $ongoing_stmt->fetch(PDO::FETCH_ASSOC);
+
+                            if ($ongoing['count'] > 0) {
+                                $is_eligible = false;
+                                $ineligibility_reasons[] = "Has " . $ongoing['count'] . " ongoing grade(s) (0.00)";
+                            }
                         }
-                    }
+
+                        // Check for existing applications for the same user/period/type combination
+                        $existing_app_query = "SELECT id, status FROM honor_applications
+                                              WHERE user_id = :user_id
+                                              AND academic_period_id = :period_id
+                                              AND application_type = :app_type
+                                              ORDER BY submitted_at DESC LIMIT 1";
+                        $existing_app_stmt = $db->prepare($existing_app_query);
+                        $existing_app_stmt->bindParam(':user_id', $user_id);
+                        $existing_app_stmt->bindParam(':period_id', $current_period);
+                        $existing_app_stmt->bindParam(':app_type', $application_type);
+                        $existing_app_stmt->execute();
+                        $existing_app = $existing_app_stmt->fetch(PDO::FETCH_ASSOC);
+
+                        // RE-APPLICATION LOGIC
+                        // Check if we should UPDATE existing or INSERT new application
+                        $should_update_existing = false;
+                        $existing_app_id = null;
+
+                        if ($existing_app) {
+                            if (in_array($existing_app['status'], ['denied', 'cancelled'])) {
+                                // Existing application was already rejected/cancelled
+                                // We'll UPDATE it instead of INSERT new (avoids UNIQUE constraint violation)
+                                $should_update_existing = true;
+                                $existing_app_id = $existing_app['id'];
+                            } else {
+                                // Existing application is still active (submitted/approved/under_review)
+                                $message = 'You already have a pending or approved application for this honor type in this academic period. Please contact your adviser if you need to make changes.';
+                                $message_type = 'error';
+                                // Skip application creation - will show error message
+                                $should_update_existing = null; // Flag to skip entirely
+                            }
+                        }
+
+                        // Save application
+                        $ineligibility_details = !empty($ineligibility_reasons) ? implode("; ", $ineligibility_reasons) : null;
+
+                        // Create or update GWA calculation
+                        $gwa_data = [
+                            'gwa' => $gwa_achieved,
+                            'total_units' => $total_units,
+                            'subjects_count' => $valid_grades_count
+                        ];
+
+                        // Check if GWA calculation exists for this user/period, if not create one
+                        $gwa_calc_check_query = "SELECT id FROM gwa_calculations
+                                                WHERE user_id = :user_id AND academic_period_id = :period_id";
+                        $gwa_calc_check_stmt = $db->prepare($gwa_calc_check_query);
+                        $gwa_calc_check_stmt->bindParam(':user_id', $user_id);
+                        $gwa_calc_check_stmt->bindParam(':period_id', $current_period);
+                        $gwa_calc_check_stmt->execute();
+                        $existing_calc = $gwa_calc_check_stmt->fetch(PDO::FETCH_ASSOC);
+
+                        $gwa_calculation_id = null;
+                        if ($existing_calc) {
+                            $gwa_calculation_id = $existing_calc['id'];
+                        } else {
+                            // First check if there's a processed submission for this period
+                            $submission_check_query = "SELECT id FROM grade_submissions WHERE user_id = :user_id AND academic_period_id = :period_id AND status = 'processed' LIMIT 1";
+                            $submission_check_stmt = $db->prepare($submission_check_query);
+                            $submission_check_stmt->bindParam(':user_id', $user_id);
+                            $submission_check_stmt->bindParam(':period_id', $current_period);
+                            $submission_check_stmt->execute();
+                            $submission_check = $submission_check_stmt->fetch(PDO::FETCH_ASSOC);
+
+                            // If no processed submission for this period, try to find the submission linked to the grades
+                            if (!$submission_check) {
+                                // Find submission that contains grades with matching semester_taken
+                                $fallback_submission_query = "SELECT DISTINCT gs.id
+                                                             FROM grade_submissions gs
+                                                             JOIN grades g ON gs.id = g.submission_id
+                                                             WHERE gs.user_id = :user_id
+                                                             AND g.semester_taken = :semester_string
+                                                             AND gs.status = 'processed'
+                                                             LIMIT 1";
+                                $fallback_stmt = $db->prepare($fallback_submission_query);
+                                $fallback_stmt->bindParam(':user_id', $user_id);
+                                $fallback_stmt->bindParam(':semester_string', $semester_string);
+                                $fallback_stmt->execute();
+                                $submission_check = $fallback_stmt->fetch(PDO::FETCH_ASSOC);
+
+                                if (!$submission_check) {
+                                    $message = 'No processed grade submission found for the selected academic period. Please ensure your grades have been processed.';
+                                    $message_type = 'error';
+                                    // Don't exit - continue to show the page with error message
+                                } else {
+                                    $submission_id = $submission_check['id'];
+                                }
+                            } else {
+                                $submission_id = $submission_check['id'];
+                            }
+
+                            // Only proceed with GWA calculation if we have a submission_id
+                            if (!isset($submission_id)) {
+                                // Skip GWA calculation creation for now - show error and continue
+                                $gwa_calculation_id = null;
+                            } else {
+                                // Create new GWA calculation record
+                                $insert_gwa_calc = "INSERT INTO gwa_calculations
+                                                  (user_id, academic_period_id, submission_id, total_units,
+                                                   total_grade_points, gwa, subjects_count, failed_subjects,
+                                                   incomplete_subjects, has_grade_above_25, calculated_at)
+                                                  VALUES (:user_id, :period_id, :submission_id,
+                                                         :total_units, :total_grade_points, :gwa, :subjects_count,
+                                                         0, 0, :has_grade_above_25, NOW())";
+
+                                $insert_gwa_calc_stmt = $db->prepare($insert_gwa_calc);
+                                $insert_gwa_calc_stmt->bindParam(':user_id', $user_id);
+                                $insert_gwa_calc_stmt->bindParam(':period_id', $current_period);
+                                $insert_gwa_calc_stmt->bindParam(':submission_id', $submission_id);
+                                $insert_gwa_calc_stmt->bindParam(':total_units', $total_units);
+                                $insert_gwa_calc_stmt->bindParam(':total_grade_points', $total_grade_points);
+                                $insert_gwa_calc_stmt->bindParam(':gwa', $gwa_achieved);
+                                $insert_gwa_calc_stmt->bindParam(':subjects_count', $valid_grades_count);
+                                $insert_gwa_calc_stmt->bindParam(':has_grade_above_25', $has_grade_above_25, PDO::PARAM_BOOL);
+
+                                if ($insert_gwa_calc_stmt->execute()) {
+                                    $gwa_calculation_id = $db->lastInsertId();
+                                } else {
+                                    $message = 'Failed to create GWA calculation. Please contact administrator.';
+                                    $message_type = 'error';
+                                    // Don't exit - show error message instead
+                                    $gwa_calculation_id = null;
+                                }
+                            }
+                        }
+
+                        // Handle application submission based on re-application logic
+                        // $should_update_existing: null = skip (active app exists), true = update old, false = insert new
+
+                        if ($should_update_existing === null) {
+                            // Skip - error message already set (existing active application)
+                            // Message was set at line 248-249
+                        } elseif ($should_update_existing === true) {
+                            // UPDATE existing cancelled/denied application (avoids UNIQUE constraint violation)
+                            $update_app = "UPDATE honor_applications
+                                          SET gwa_calculation_id = :gwa_calculation_id,
+                                              application_type = :application_type,
+                                              gwa_achieved = :gwa_achieved,
+                                              required_gwa = :required_gwa,
+                                              status = 'submitted',
+                                              is_eligible = :is_eligible,
+                                              ineligibility_reasons = :ineligibility_reasons,
+                                              submitted_at = NOW(),
+                                              reviewed_at = NULL,
+                                              reviewed_by = NULL,
+                                              rejection_reason = NULL
+                                          WHERE id = :app_id";
+                            $update_stmt = $db->prepare($update_app);
+                            $update_stmt->bindParam(':app_id', $existing_app_id);
+                            $update_stmt->bindParam(':gwa_calculation_id', $gwa_calculation_id);
+                            $update_stmt->bindParam(':application_type', $application_type);
+                            $update_stmt->bindParam(':gwa_achieved', $gwa_achieved);
+                            $update_stmt->bindParam(':required_gwa', $required_gwa);
+                            $update_stmt->bindParam(':is_eligible', $is_eligible, PDO::PARAM_BOOL);
+                            $update_stmt->bindParam(':ineligibility_reasons', $ineligibility_details);
+
+                            $success = $update_stmt->execute();
+                            $action = 'resubmitted';
+
+                            if ($success) {
+                                // Notify adviser if ineligible
+                                if (!$is_eligible) {
+                                    $adviser_query = "SELECT id FROM users WHERE role = 'adviser' AND department = :department AND status = 'active' LIMIT 1";
+                                    $adviser_stmt = $db->prepare($adviser_query);
+                                    $adviser_stmt->bindParam(':department', $_SESSION['department']);
+                                    $adviser_stmt->execute();
+                                    $adviser = $adviser_stmt->fetch(PDO::FETCH_ASSOC);
+
+                                    if ($adviser) {
+                                        require_once '../classes/NotificationManager.php';
+                                        $notificationManager = new NotificationManager($db);
+
+                                        $student_name = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
+                                        $type_labels = [
+                                            'deans_list' => "Dean's List",
+                                            'cum_laude' => 'Cum Laude',
+                                            'magna_cum_laude' => 'Magna Cum Laude',
+                                            'summa_cum_laude' => 'Summa Cum Laude'
+                                        ];
+                                        $honor_type = $type_labels[$application_type] ?? $application_type;
+
+                                        $notificationManager->createNotification(
+                                            $adviser['id'],
+                                            "Ineligible Application Resubmitted",
+                                            "$student_name resubmitted an application for $honor_type but is NOT ELIGIBLE. Reasons: " . $ineligibility_details,
+                                            'warning',
+                                            'application'
+                                        );
+                                    }
+                                }
+
+                                $message = 'Honor application ' . $action . ' successfully! Your previous application has been updated.' . ($is_eligible ? '' : ' Note: Your application does not meet eligibility requirements. Your adviser has been notified.');
+                                $message_type = 'success';
+                            } else {
+                                $message = 'Failed to resubmit application. Please try again.';
+                                $message_type = 'error';
+                            }
+                        } else {
+                            // INSERT new application (no existing application for this period/type)
+                            $insert_app = "INSERT INTO honor_applications
+                                          (user_id, academic_period_id, gwa_calculation_id, application_type,
+                                           gwa_achieved, required_gwa, status, is_eligible, ineligibility_reasons, submitted_at)
+                                          VALUES (:user_id, :academic_period_id, :gwa_calculation_id, :application_type,
+                                                 :gwa_achieved, :required_gwa, 'submitted', :is_eligible, :ineligibility_reasons, NOW())";
+                            $insert_stmt = $db->prepare($insert_app);
+                            $insert_stmt->bindParam(':user_id', $user_id);
+                            $insert_stmt->bindParam(':academic_period_id', $current_period);
+                            $insert_stmt->bindParam(':gwa_calculation_id', $gwa_calculation_id);
+                            $insert_stmt->bindParam(':application_type', $application_type);
+                            $insert_stmt->bindParam(':gwa_achieved', $gwa_achieved);
+                            $insert_stmt->bindParam(':required_gwa', $required_gwa);
+                            $insert_stmt->bindParam(':is_eligible', $is_eligible, PDO::PARAM_BOOL);
+                            $insert_stmt->bindParam(':ineligibility_reasons', $ineligibility_details);
+
+                            $success = $insert_stmt->execute();
+                            $action = 'submitted';
+
+                            if ($success) {
+                                // Notify adviser if ineligible
+                                if (!$is_eligible) {
+                                    $adviser_query = "SELECT id FROM users WHERE role = 'adviser' AND department = :department AND status = 'active' LIMIT 1";
+                                    $adviser_stmt = $db->prepare($adviser_query);
+                                    $adviser_stmt->bindParam(':department', $_SESSION['department']);
+                                    $adviser_stmt->execute();
+                                    $adviser = $adviser_stmt->fetch(PDO::FETCH_ASSOC);
+
+                                    if ($adviser) {
+                                        require_once '../classes/NotificationManager.php';
+                                        $notificationManager = new NotificationManager($db);
+
+                                        $student_name = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
+                                        $type_labels = [
+                                            'deans_list' => "Dean's List",
+                                            'cum_laude' => 'Cum Laude',
+                                            'magna_cum_laude' => 'Magna Cum Laude',
+                                            'summa_cum_laude' => 'Summa Cum Laude'
+                                        ];
+                                        $honor_type = $type_labels[$application_type] ?? $application_type;
+
+                                        $notificationManager->createNotification(
+                                            $adviser['id'],
+                                            "Ineligible Application Submitted",
+                                            "$student_name submitted an application for $honor_type but is NOT ELIGIBLE. Reasons: " . $ineligibility_details,
+                                            'warning',
+                                            'application'
+                                        );
+                                    }
+                                }
+
+                                $message = 'Honor application ' . $action . ' successfully!' . ($is_eligible ? '' : ' Note: Your application does not meet eligibility requirements. Your adviser has been notified.');
+                                $message_type = 'success';
+                            } else {
+                                $message = 'Failed to submit application. Please try again.';
+                                $message_type = 'error';
+                            }
+                        }
                     }
                 }
             }
@@ -382,9 +503,24 @@ $active_academic_period = $active_period_stmt->fetch(PDO::FETCH_ASSOC);
 $current_period = $active_academic_period['id'] ?? null;
 $_SESSION['current_period'] = $current_period;
 
+// Check if student has ANY processed grades (not just for current period)
+$has_any_grades_query = "
+    SELECT COUNT(*) as total_grades
+    FROM grades g
+    JOIN grade_submissions gs ON g.submission_id = gs.id
+    WHERE gs.user_id = :user_id
+    AND gs.status = 'processed'
+";
+$has_any_grades_stmt = $db->prepare($has_any_grades_query);
+$has_any_grades_stmt->bindParam(':user_id', $user_id);
+$has_any_grades_stmt->execute();
+$has_any_grades_result = $has_any_grades_stmt->fetch(PDO::FETCH_ASSOC);
+
+$has_processed_grades = ($has_any_grades_result['total_grades'] > 0);
+
 // Calculate GWA directly from grades table for accuracy (like grades.php)
 $gwa_data = null;
-if ($current_period) {
+if ($current_period && $has_processed_grades) {
     // Get the academic period info to build the correct semester filter
     $period_info_query = "SELECT semester, school_year FROM academic_periods WHERE id = :current_period";
     $period_info_stmt = $db->prepare($period_info_query);
@@ -629,6 +765,7 @@ $eligible_for_summa  = false;
 $eligible_for_magna  = false;
 $eligible_for_cum_laude = false;
 $has_grade_above_25  = false;
+$has_ongoing_grades  = false;
 
 if ($gwa_data) {
     // Check if the student has any individual grade above 2.5 (only from processed submissions)
@@ -803,14 +940,28 @@ if ($gwa_data) {
                     $department = $_SESSION['department'] ?? '';
                     $application_period_status = canStudentApply($db, $_SESSION['user_id']);
 
-                    // Get ALL activated academic periods that haven't expired
-                    $all_open_periods_query = "SELECT * FROM academic_periods
-                                               WHERE is_active = 1
-                                               AND end_date >= CURDATE()
-                                               ORDER BY start_date ASC";
-                    $all_open_stmt = $db->prepare($all_open_periods_query);
-                    $all_open_stmt->execute();
-                    $all_open_periods = $all_open_stmt->fetchAll(PDO::FETCH_ASSOC);
+                    // Get ALL active academic periods (like chairperson view)
+                    // But mark which ones the student can actually apply for
+                    $all_active_periods_query = "SELECT ap.*, ap.id as period_id, ap.semester, ap.school_year, ap.period_name,
+                                                        CASE WHEN EXISTS (
+                                                            SELECT 1 FROM grades g
+                                                            JOIN grade_submissions gs ON g.submission_id = gs.id
+                                                            WHERE gs.user_id = :user_id
+                                                            AND gs.status = 'processed'
+                                                            AND g.semester_taken = CONCAT(ap.semester, ' Semester SY ', ap.school_year)
+                                                        ) THEN 1 ELSE 0 END as has_processed_grades
+                                                 FROM academic_periods ap
+                                                 WHERE ap.is_active = 1
+                                                 ORDER BY ap.school_year DESC, ap.semester DESC";
+                    $all_active_stmt = $db->prepare($all_active_periods_query);
+                    $all_active_stmt->bindParam(':user_id', $user_id);
+                    $all_active_stmt->execute();
+                    $all_open_periods = $all_active_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                    // Debug: Show what we're querying for admins
+                    if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin') {
+                        echo "<!-- DEBUG: Student department: '$department', Found periods: " . count($all_open_periods) . " -->";
+                    }
                     ?>
 
                     <?php if (!$application_period_status['can_apply']): ?>
@@ -818,64 +969,62 @@ if ($gwa_data) {
                             <div class="flex items-center mb-6">
                                 <div class="flex-shrink-0 w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center">
                                     <i data-lucide="calendar-x" class="w-6 h-6 text-amber-600"></i>
-                                </div>
-                                <div class="ml-4">
-                                    <h3 class="text-xl font-bold text-amber-900">Applications Currently Closed</h3>
-                                    <p class="text-amber-700 mt-1"><?php echo htmlspecialchars($application_period_status['reason']); ?></p>
+                            </div>
+                            <div class="ml-4">
+                                <h3 class="text-xl font-bold text-amber-900">Applications Currently Closed</h3>
+                                <p class="text-amber-700 mt-1"><?php echo htmlspecialchars($application_period_status['reason']); ?></p>
+                            </div>
+                        </div>
+
+                        <?php if (isset($application_period_status['next_period']) && $application_period_status['next_period']): ?>
+                            <div class="bg-white bg-opacity-60 rounded-2xl p-6 border border-amber-200">
+                                <h4 class="font-bold text-amber-900 mb-4 flex items-center">
+                                    <i data-lucide="calendar-clock" class="w-5 h-5 mr-2"></i>
+                                    Next Application Period
+                                </h4>
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-amber-800">
+                                    <div class="text-center">
+                                        <p class="text-sm font-medium text-amber-600 mb-1">Period</p>
+                                        <p class="font-bold"><?php echo htmlspecialchars($application_period_status['next_period']['semester'] . ' ' . $application_period_status['next_period']['academic_year']); ?></p>
+                                    </div>
+                                    <div class="text-center">
+                                        <p class="text-sm font-medium text-amber-600 mb-1">Opens</p>
+                                        <p class="font-bold"><?php echo date('M d, Y', strtotime($application_period_status['next_period']['start_date'])); ?></p>
+                                    </div>
+                                    <div class="text-center">
+                                        <p class="text-sm font-medium text-amber-600 mb-1">Closes</p>
+                                        <p class="font-bold"><?php echo date('M d, Y', strtotime($application_period_status['next_period']['end_date'])); ?></p>
+                                    </div>
                                 </div>
                             </div>
+                        <?php endif; ?>
 
-                            <?php if (isset($application_period_status['next_period']) && $application_period_status['next_period']): ?>
-                                <div class="bg-white bg-opacity-60 rounded-2xl p-6 border border-amber-200">
-                                    <h4 class="font-bold text-amber-900 mb-4 flex items-center">
-                                        <i data-lucide="calendar-clock" class="w-5 h-5 mr-2"></i>
-                                        Next Application Period
-                                    </h4>
-                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-amber-800">
-                                        <div class="text-center">
-                                            <p class="text-sm font-medium text-amber-600 mb-1">Period</p>
-                                            <p class="font-bold"><?php echo htmlspecialchars($application_period_status['next_period']['semester'] . ' ' . $application_period_status['next_period']['academic_year']); ?></p>
-                                        </div>
-                                        <div class="text-center">
-                                            <p class="text-sm font-medium text-amber-600 mb-1">Opens</p>
-                                            <p class="font-bold"><?php echo date('M d, Y', strtotime($application_period_status['next_period']['start_date'])); ?></p>
-                                        </div>
-                                        <div class="text-center">
-                                            <p class="text-sm font-medium text-amber-600 mb-1">Closes</p>
-                                            <p class="font-bold"><?php echo date('M d, Y', strtotime($application_period_status['next_period']['end_date'])); ?></p>
-                                        </div>
-                                    </div>
+                        <!-- Debug Info for Admins -->
+                        <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
+                            <div class="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+                                <h5 class="font-bold text-red-900 mb-2">🔧 Debug Info (Admin Only)</h5>
+                                <div class="text-sm text-red-800 space-y-1">
+                                    <p><strong>Current Date:</strong> <?php echo date('Y-m-d'); ?></p>
+                                    <p><strong>Active Academic Periods:</strong> <?php echo count($all_open_periods ?? []); ?> found</p>
+                                    <p><strong>Application Periods Status:</strong> <?php echo $application_period_status['can_apply'] ? 'OPEN' : 'CLOSED'; ?></p>
+                                    <p><strong>Issue:</strong> Student applications page checks academic_periods.is_active=1, but should check application_periods.status='open'</p>
                                 </div>
-                            <?php endif; ?>
-
-                            <!-- Debug Info for Admins -->
-                            <?php if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin'): ?>
-                                <div class="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl">
-                                    <h5 class="font-bold text-red-900 mb-2">🔧 Debug Info (Admin Only)</h5>
-                                    <div class="text-sm text-red-800 space-y-1">
-                                        <p><strong>Current Date:</strong> <?php echo date('Y-m-d'); ?></p>
-                                        <p><strong>Active Academic Periods:</strong> <?php echo count($all_open_periods ?? []); ?> found</p>
-                                        <p><strong>Application Periods Status:</strong> <?php echo $application_period_status['can_apply'] ? 'OPEN' : 'CLOSED'; ?></p>
-                                        <p><strong>Issue:</strong> Student applications page checks academic_periods.is_active=1, but should check application_periods.status='open'</p>
-                                    </div>
-                                </div>
-                            <?php endif; ?>
-                        </div>
+                            </div>
+                        <?php endif; ?>
                     <?php else: ?>
                         <div class="mb-8">
                             <div class="p-8 bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-3xl shadow-sm mb-6">
                                 <div class="flex items-center mb-4">
                                     <div class="flex-shrink-0 w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center">
                                         <i data-lucide="calendar-check" class="w-6 h-6 text-emerald-600"></i>
-                                    </div>
-                                    <div class="ml-4">
-                                        <h3 class="text-xl font-bold text-emerald-900">Applications Now Open!</h3>
-                                        <p class="text-emerald-700 mt-1">Submit your honor application for any of the open periods below</p>
-                                    </div>
+                                </div>
+                                <div class="ml-4">
+                                    <h3 class="text-xl font-bold text-emerald-900">Applications Now Open!</h3>
+                                    <p class="text-emerald-700 mt-1">Submit your honor application for any of the open periods below</p>
                                 </div>
                             </div>
 
-                            <!-- Display all open application periods -->
+                            <!-- Display all active application periods -->
                             <?php if (!empty($all_open_periods)): ?>
                                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                                     <?php foreach ($all_open_periods as $period): ?>
@@ -885,25 +1034,34 @@ if ($gwa_data) {
                                         $today = new DateTime();
                                         $interval = $today->diff($end_date);
                                         $period_days_remaining = $interval->invert ? 0 : $interval->days;
+
+                                        // Check if student has processed grades for this period
+                                        $has_grades = $period['has_processed_grades'] == 1;
+                                        $can_apply = true; // Show all active periods, validation happens on submission
                                         ?>
-                                        <div class="bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-200 rounded-2xl p-6 hover:shadow-lg transition-shadow">
+                                        <div class="bg-gradient-to-br <?php echo $has_grades ? 'from-emerald-50 to-green-50 border-emerald-200' : 'from-blue-50 to-cyan-50 border-blue-200'; ?> border-2 rounded-2xl p-6 hover:shadow-lg transition-shadow">
                                             <div class="text-center mb-4">
-                                                <div class="inline-flex items-center justify-center w-10 h-10 bg-emerald-100 rounded-full mb-3">
-                                                    <i data-lucide="calendar" class="w-5 h-5 text-emerald-600"></i>
+                                                <div class="inline-flex items-center justify-center w-10 h-10 <?php echo $has_grades ? 'bg-emerald-100' : 'bg-blue-100'; ?> rounded-full mb-3">
+                                                    <i data-lucide="<?php echo $has_grades ? 'calendar-check' : 'calendar-plus'; ?>" class="w-5 h-5 <?php echo $has_grades ? 'text-emerald-600' : 'text-blue-600'; ?>"></i>
                                                 </div>
-                                                <h4 class="font-bold text-emerald-900 text-lg mb-1">
+                                                <h4 class="font-bold <?php echo $has_grades ? 'text-emerald-900' : 'text-blue-900'; ?> text-lg mb-1">
                                                     <?php echo htmlspecialchars($period['semester'] . ' Semester ' . $period['school_year']); ?>
                                                 </h4>
+                                                <div class="flex items-center justify-center gap-2 mb-2">
+                                                    <span class="text-xs font-medium <?php echo $has_grades ? 'text-emerald-600 bg-emerald-100' : 'text-blue-600 bg-blue-100'; ?> px-2 py-1 rounded-lg">
+                                                        <?php echo $has_grades ? '✓ Ready to Apply' : '📤 Upload Grades First'; ?>
+                                                    </span>
+                                                </div>
                                             </div>
                                             <div class="space-y-3">
-                                                <div class="bg-white bg-opacity-60 rounded-xl p-3 border border-emerald-200">
-                                                    <p class="text-xs font-medium text-emerald-600 mb-1">Deadline</p>
-                                                    <p class="font-bold text-emerald-900"><?php echo date('M d, Y', strtotime($period['end_date'])); ?></p>
+                                                <div class="bg-white bg-opacity-60 rounded-xl p-3 border <?php echo $has_grades ? 'border-emerald-200' : 'border-blue-200'; ?>">
+                                                    <p class="text-xs font-medium <?php echo $has_grades ? 'text-emerald-600' : 'text-blue-600'; ?> mb-1">Deadline</p>
+                                                    <p class="font-bold <?php echo $has_grades ? 'text-emerald-900' : 'text-blue-900'; ?>"><?php echo date('M d, Y', strtotime($period['end_date'])); ?></p>
                                                 </div>
                                                 <?php if ($period_days_remaining > 0): ?>
-                                                    <div class="bg-white bg-opacity-60 rounded-xl p-3 border border-emerald-200 text-center">
-                                                        <p class="text-xs font-medium text-emerald-600 mb-1">Days Left</p>
-                                                        <p class="font-bold text-emerald-900 text-2xl"><?php echo $period_days_remaining; ?></p>
+                                                    <div class="bg-white bg-opacity-60 rounded-xl p-3 border <?php echo $has_grades ? 'border-emerald-200' : 'border-blue-200'; ?> text-center">
+                                                        <p class="text-xs font-medium <?php echo $has_grades ? 'text-emerald-600' : 'text-blue-600'; ?> mb-1">Days Left</p>
+                                                        <p class="font-bold <?php echo $has_grades ? 'text-emerald-900' : 'text-blue-900'; ?> text-2xl"><?php echo $period_days_remaining; ?></p>
                                                     </div>
                                                 <?php elseif ($period_days_remaining == 0): ?>
                                                     <div class="bg-red-50 bg-opacity-60 rounded-xl p-3 border border-red-200 text-center">
@@ -944,7 +1102,7 @@ if ($gwa_data) {
                         </div>
                     <?php endif; ?>
 
-                    <?php if (!$gwa_data): ?>
+                    <?php if (!$has_processed_grades): ?>
                         <div class="text-center py-6">
                             <p class="text-gray-500">Upload your grades first to apply for honors.</p>
                         </div>
@@ -1005,7 +1163,7 @@ if ($gwa_data) {
                                     </div>
                                     <?php if (!$eligible_for_deans): ?>
                                         <p class="text-xs text-amber-600 mt-2 font-medium">
-                                            <?php if ($gwa_data['gwa'] > 1.75): ?>
+                                            <?php if ($gwa_data && $gwa_data['gwa'] > 1.75): ?>
                                                 ⚠ GWA too high (<?php echo formatGWA($gwa_data['gwa']); ?>) - Adviser will review
                                             <?php elseif ($has_grade_above_25): ?>
                                                 ⚠ Has grade(s) above 2.5 - Adviser will review
@@ -1015,7 +1173,7 @@ if ($gwa_data) {
                                 </div>
 
                                 <!-- Latin Honors if 8+ semesters completed and no ongoing grades -->
-                                <?php if ($total_semesters >= 8 && !$has_ongoing_grades): ?>
+                                <?php if ($total_semesters >= 8 && (!isset($has_ongoing_grades) || !$has_ongoing_grades)): ?>
                                     <div class="bg-purple-50 rounded-xl p-5 shadow-sm">
                                         <h4 class="text-base font-semibold text-purple-900 mb-3">Latin Honors (4th Year)</h4>
                                         <div class="space-y-2 text-sm">
@@ -1073,11 +1231,13 @@ if ($gwa_data) {
                                     <div class="text-center mb-8">
                                         <div class="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
                                             <i data-lucide="send" class="w-8 h-8 text-primary-600"></i>
-                                        </div>
+                                    </div>
+                                    <div class="ml-4">
                                         <h3 class="text-2xl font-bold text-gray-900 mb-2">Submit Application</h3>
                                         <p class="text-gray-600">Choose the honor type you want to apply for</p>
                                         <p class="text-sm text-amber-600 mt-2">You can apply even if not eligible. Your adviser will be notified.</p>
                                     </div>
+                                </div>
                                     <form method="POST" class="space-y-6">
                                         <!-- Academic Period Selector -->
                                         <div>
@@ -1150,11 +1310,10 @@ if ($gwa_data) {
                                 <div class="flex items-center">
                                     <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center mr-4">
                                         <i data-lucide="history" class="w-6 h-6 text-blue-600"></i>
-                                    </div>
-                                    <div>
-                                        <h3 class="text-2xl font-bold text-gray-900">Application History</h3>
-                                        <p class="text-gray-600">Track your previous honor applications</p>
-                                    </div>
+                                </div>
+                                <div>
+                                    <h3 class="text-2xl font-bold text-gray-900">Application History</h3>
+                                    <p class="text-gray-600">Track your previous honor applications</p>
                                 </div>
                             </div>
                             <div class="p-8">
@@ -1238,12 +1397,12 @@ if ($gwa_data) {
                             <div class="flex items-center mb-6">
                                 <div class="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center mr-4">
                                     <i data-lucide="award" class="w-6 h-6 text-emerald-600"></i>
-                                </div>
-                                <div>
-                                    <h4 class="text-xl font-bold text-emerald-900">Dean's List</h4>
-                                    <p class="text-emerald-700">Available for all year levels</p>
-                                </div>
                             </div>
+                            <div>
+                                <h4 class="text-xl font-bold text-emerald-900">Dean's List</h4>
+                                <p class="text-emerald-700">Available for all year levels</p>
+                            </div>
+                        </div>
                             <ul class="space-y-4 text-emerald-800">
                                 <li class="flex items-start">
                                     <div class="w-6 h-6 bg-emerald-200 rounded-full flex items-center justify-center mr-3 mt-0.5 flex-shrink-0">
@@ -1276,12 +1435,12 @@ if ($gwa_data) {
                             <div class="flex items-center mb-6">
                                 <div class="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center mr-4">
                                     <i data-lucide="crown" class="w-6 h-6 text-purple-600"></i>
-                                </div>
-                                <div>
-                                    <h4 class="text-xl font-bold text-purple-900">Latin Honors</h4>
-                                    <p class="text-purple-700">Available for 4th year students only</p>
-                                </div>
                             </div>
+                            <div>
+                                <h4 class="text-xl font-bold text-purple-900">Latin Honors</h4>
+                                <p class="text-purple-700">Available for 4th year students only</p>
+                            </div>
+                        </div>
                             <div class="space-y-4">
                                 <div class="bg-white bg-opacity-60 rounded-2xl p-4 border border-purple-200">
                                     <div class="flex items-center mb-2">
@@ -1320,6 +1479,36 @@ if ($gwa_data) {
 
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <script>
+        console.log('DEBUG: Applications page loaded');
+
+        // Add form submission debugging
+        const form = document.querySelector('form[method="POST"]');
+        if (form) {
+            console.log('DEBUG: Found application form');
+
+            form.addEventListener('submit', function(e) {
+                console.log('DEBUG: Form submitted');
+                const formData = new FormData(form);
+                const data = {};
+                for (let [key, value] of formData.entries()) {
+                    data[key] = value;
+                }
+                console.log('DEBUG: Form data:', data);
+            });
+        } else {
+            console.log('DEBUG: Application form not found');
+        }
+
+        // Monitor for any unhandled errors
+        window.addEventListener('error', function(e) {
+            console.error('DEBUG: Unhandled error:', e.error);
+        });
+
+        // Monitor for unhandled promise rejections
+        window.addEventListener('unhandledrejection', function(e) {
+            console.error('DEBUG: Unhandled promise rejection:', e.reason);
+        });
+
         lucide.createIcons();
 
         // Handle academic period selection
