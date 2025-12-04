@@ -358,4 +358,56 @@ class NotificationManager {
             return false;
         }
     }
+
+    public function notifyChairpersonHonorApplicationSubmitted($student_name, $application_type, $department) {
+        $type_label = ucfirst(str_replace('_', ' ', $application_type));
+        $title = "New Honor Application Submitted";
+        $message = "{$student_name} has submitted a {$type_label} application for review.";
+        $type = 'info';
+
+        // Notify chairpersons in the same department
+        $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
+                  SELECT id, :title, :message, :type, 'honor_application'
+                  FROM users WHERE role = 'chairperson' AND department = :department AND status = 'active'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":title", $title);
+        $stmt->bindParam(":message", $message);
+        $stmt->bindParam(":type", $type);
+        $stmt->bindParam(":department", $department);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Chairperson honor application notification error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function notifyChairpersonApplicationStatusChanged($student_name, $application_type, $new_status, $department) {
+        $type_label = ucfirst(str_replace('_', ' ', $application_type));
+        $status_label = ucfirst($new_status);
+
+        $title = "Application Status Changed";
+        $message = "{$student_name}'s {$type_label} application status has been changed to: {$status_label}";
+        $type = 'info';
+
+        // Notify chairpersons in the same department
+        $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
+                  SELECT id, :title, :message, :type, 'honor_application'
+                  FROM users WHERE role = 'chairperson' AND department = :department AND status = 'active'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":title", $title);
+        $stmt->bindParam(":message", $message);
+        $stmt->bindParam(":type", $type);
+        $stmt->bindParam(":department", $department);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Chairperson application status change notification error: " . $e->getMessage());
+            return false;
+        }
+    }
 }

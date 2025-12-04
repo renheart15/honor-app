@@ -534,8 +534,11 @@
                     });
                 }
 
-                // update department (just mirror selected college for now)
-                departmentInput.value = selectedCollege;
+                // Department will be set when course is selected (in updateMajors)
+                // Clear department if no college selected
+                if (!selectedCollege) {
+                    departmentInput.value = '';
+                }
 
                 // also refresh majors if user already had a course selected
                 updateMajors();
@@ -546,12 +549,21 @@
                 const courseSelect = document.getElementById("course");
                 const majorSelect = document.getElementById("major");
                 const majorDiv = document.getElementById("majorDiv");
+                const departmentInput = document.getElementById("department");
 
                 const selectedCollege = collegeSelect.value;
                 const selectedCourse = courseSelect.value;
 
                 majorSelect.innerHTML = '<option value="">Select Major</option>';
                 majorDiv.style.display = "none";
+
+                // IMPORTANT: Set department to the selected COURSE (not college)
+                // This ensures department matches what advisers have in their records
+                if (selectedCourse) {
+                    departmentInput.value = selectedCourse;
+                } else if (!selectedCollege) {
+                    departmentInput.value = '';
+                }
 
                 if (
                     selectedCollege &&

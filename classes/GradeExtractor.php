@@ -590,9 +590,10 @@ class GradeExtractor {
                         // Line 1: "CS27\tNSTP 1\tNATIONAL SERVICE TRAINING PROGRAM"
                         // Line 2: "1"  (continuation of subject name)
                         // Line 3: "3.00\t08:00AM-11:00AM\tSat\t1.9" (grade info)
-                        if (preg_match('/^\d+$/', $nextLine) && strlen($nextLine) <= 2) {
+                        // IMPORTANT: Only apply this for NSTP subjects (they split "PROGRAM 1" into "PROGRAM" and "1")
+                        if (preg_match('/^\d+$/', $nextLine) && strlen($nextLine) <= 2 && strpos($combined, 'NSTP') !== false) {
                             // Debug: Track when this pattern matches for NSTP
-                            if (strpos($combined, 'NSTP') !== false && $this->debug) {
+                            if ($this->debug) {
                                 if (!isset($debugInfo['nstp_single_digit_match'])) {
                                     $debugInfo['nstp_single_digit_match'] = [];
                                 }
@@ -602,7 +603,7 @@ class GradeExtractor {
                                     'about_to_continue' => 'YES'
                                 ];
                             }
-                            // This is a continuation number, append to subject name
+                            // This is a continuation number for NSTP, append to subject name
                             if (strpos($combined, "\t") !== false) {
                                 $parts = explode("\t", $combined);
                                 if (count($parts) >= 3) {
@@ -786,68 +787,17 @@ class GradeExtractor {
                         if ($j - $i > 10) break;
                     }
 
-                    // AGGRESSIVE FALLBACK: Search extensively for any grade-like numbers
-                    if (!preg_match('/\d+\.\d+\s*$/', $combined)) {
-                        $foundGrade = false;
-                        $j = $i + 1;
-
-                        // Search up to 15 lines ahead for any grade-like number
-                        while ($j < $lineCount && isset($lines[$j]) && !$foundGrade) {
-                            $nextLine = trim($lines[$j]);
-
-                            // Stop at boundaries
-                            if (empty($nextLine) ||
-                                preg_match('/^CS\d+\s/', $nextLine) ||
-                                $this->isSemesterLine($nextLine) ||
-                                $this->isHeaderLine($nextLine) ||
-                                preg_match('/^Total Units/', $nextLine)) {
-                                break;
-                            }
-
-                            // Look for ANY decimal number that could be a grade (1.0-4.0)
-                            if (preg_match_all('/(\d+\.\d+)/', $nextLine, $gradeMatches)) {
-                                foreach ($gradeMatches[1] as $potentialGradeStr) {
-                                    $potentialGrade = floatval($potentialGradeStr);
-                                    // Accept any number between 1.0 and 4.0 as a potential grade
-                                    if ($potentialGrade >= 1.0 && $potentialGrade <= 4.0) {
-                                        // Try to construct complete grade info
-                                        $units = "3.00"; // Default
-                                        $time = "TBA";
-                                        $day = "TBA";
-
-                                        // Look for units in the current line or previous lines
-                                        if (preg_match('/(\d+\.\d+)\s+.*?\s+.*?\s+' . preg_quote($potentialGradeStr) . '/', $nextLine, $unitMatch)) {
-                                            $units = $unitMatch[1];
-                                        }
-
-                                        // Look for time/day pattern
-                                        if (preg_match('/(\d+:\d+[AP]M-\d+:\d+[AP]M)\s+([A-Za-z]+)/', $nextLine, $timeMatch)) {
-                                            $time = $timeMatch[1];
-                                            $day = $timeMatch[2];
-                                        }
-
-                                        $completeGradeLine = $units . " " . $time . " " . $day . " " . $potentialGrade;
-                                        if (strpos($combined, "\t") !== false) {
-                                            $combined .= "\t" . $completeGradeLine;
-                                        } else {
-                                            $combined .= " " . $completeGradeLine;
-                                        }
-                                        $foundGrade = true;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            $j++;
-                            if ($j - $i > 15) break; // Extended search limit
-                        }
-
-                        // If still no grade found, check if this might be an ongoing subject
-                        // and don't force a grade
-                        if (!$foundGrade && !preg_match('/\d+\.\d+/', $combined)) {
-                            // This appears to be an ongoing subject, leave as is
-                        }
-                    }
+                    // DISABLED AGGRESSIVE FALLBACK: This was causing false grades to be extracted
+                    // For PDFs that don't have grades (like enrollment/schedule documents),
+                    // we should NOT create fake grades. The fallback logic was incorrectly
+                    // treating units values as grades for subjects without grade columns.
+                    //
+                    // Example: For 2025-2026 semester, lines like:
+                    // "CS104 AP 6 CROSS-PLATFORM SCRIPT" + "3.00 09:00AM-12:00PM TueWF"
+                    // The "3.00" is UNITS, not a grade. There is no grade column in this PDF.
+                    //
+                    // If a PDF doesn't have a clear GRADE column, treat subjects as ongoing (grade = 0.0)
+                    // rather than fabricating grades from units or other numeric values.
                 }
 
                 $combinedLines[$i] = $combined;
@@ -929,41 +879,10 @@ class GradeExtractor {
                     'action' => 'returning_cs58_correct_result'
                 ];
             }
-                return [
-                    'subject_code' => 'CS58',
-                    'subject_type' => 'PC 3211',
-                    'subject_name' => 'INFORMATION ASSURANCE AND SECURITY 1 (LEC)',
-                    'units' => 3.00,
-                    'time' => '08:00AM-09:00AM',
-                    'day' => 'TueTh',
-                    'grade' => 0.0,
-                    'letter_grade' => 'N/A',
-                    'remarks' => 'ONGOING'
-                ];
+                // REMOVED: Hardcoded CS58 with grade 0.0 - let dynamic parser extract actual grade
         }
 
-        // CS59 INFORMATION ASSURANCE AND SECURITY 1 (LAB) - Complete subject with ongoing status
-        if (strpos($originalLine, 'CS59') === 0 && strpos($originalLine, 'INFORMATION ASSURANCE AND SECURITY 1 (LAB)') !== false) {
-            if ($this->debug && $isDebugLine) {
-                $debugInfo['parseGradeLine_calls'][count($debugInfo['parseGradeLine_calls']) - 1]['cs59_detected'] = [
-                    'line' => $originalLine,
-                    'contains_cs59' => strpos($originalLine, 'CS59') === 0 ? 'YES' : 'NO',
-                    'contains_info_assurance_1_lab' => strpos($originalLine, 'INFORMATION ASSURANCE AND SECURITY 1 (LAB)') !== false ? 'YES' : 'NO',
-                    'action' => 'returning_cs59_correct_result'
-                ];
-            }
-            return [
-                'subject_code' => 'CS59',
-                'subject_type' => 'PC 3211L',
-                'subject_name' => 'INFORMATION ASSURANCE AND SECURITY 1 (LAB)',
-                'units' => 2.00,
-                'time' => '09:00AM-12:00PM',
-                'day' => 'MW',
-                'grade' => 0.0,
-                'letter_grade' => 'N/A',
-                'remarks' => 'ONGOING'
-            ];
-        }
+        // REMOVED: Hardcoded CS59 with grade 0.0 - let dynamic parser extract actual grade
 
         // CS29 DISCRETE MATHEMATICS - Handle early to ensure it gets caught
         if (strpos($originalLine, 'CS29') === 0) {
@@ -988,51 +907,9 @@ class GradeExtractor {
             ];
         }
 
-        // CS54 TECHNOLOGY AND THE APPLICATION OF THE INTERNET OF THINGS - Handle as ongoing
-        if (strpos($originalLine, 'CS54') === 0 && strpos($originalLine, 'TECHNOLOGY AND THE APPLICATION OF THE INTERNET OF THINGS') !== false) {
-            if ($this->debug && $isDebugLine) {
-                $debugInfo['parseGradeLine_calls'][count($debugInfo['parseGradeLine_calls']) - 1]['cs54_iot_detected'] = [
-                    'line' => $originalLine,
-                    'contains_cs54' => strpos($originalLine, 'CS54') === 0 ? 'YES' : 'NO',
-                    'contains_iot' => strpos($originalLine, 'TECHNOLOGY AND THE APPLICATION OF THE INTERNET OF THINGS') !== false ? 'YES' : 'NO',
-                    'action' => 'returning_cs54_ongoing_result'
-                ];
-            }
-            return [
-                'subject_code' => 'CS54',
-                'subject_type' => 'AP 5',
-                'subject_name' => 'TECHNOLOGY AND THE APPLICATION OF THE INTERNET OF THINGS',
-                'units' => 3.00,
-                'time' => '09:00AM-12:00PM',
-                'day' => 'TueTh',
-                'grade' => 0.0,
-                'letter_grade' => 'N/A',
-                'remarks' => 'ONGOING'
-            ];
-        }
+        // REMOVED: Hardcoded CS54 with grade 0.0 - let dynamic parser extract actual grade
 
-        // CS53 IOS MOBILE APPLICATION DEVELOPMENT CROSS-PLATFORM - Handle as ongoing
-        if (strpos($originalLine, 'CS53') === 0 && strpos($originalLine, 'IOS MOBILE APPLICATION DEVELOPMENT CROSS-PLATFORM') !== false) {
-            if ($this->debug && $isDebugLine) {
-                $debugInfo['parseGradeLine_calls'][count($debugInfo['parseGradeLine_calls']) - 1]['cs53_ios_detected'] = [
-                    'line' => $originalLine,
-                    'contains_cs53' => strpos($originalLine, 'CS53') === 0 ? 'YES' : 'NO',
-                    'contains_ios' => strpos($originalLine, 'IOS MOBILE APPLICATION DEVELOPMENT CROSS-PLATFORM') !== false ? 'YES' : 'NO',
-                    'action' => 'returning_cs53_ongoing_result'
-                ];
-            }
-            return [
-                'subject_code' => 'CS53',
-                'subject_type' => 'AP 4',
-                'subject_name' => 'IOS MOBILE APPLICATION DEVELOPMENT CROSS-PLATFORM',
-                'units' => 3.00,
-                'time' => '01:00PM-03:00PM',
-                'day' => 'MW',
-                'grade' => 0.0,
-                'letter_grade' => 'N/A',
-                'remarks' => 'ONGOING'
-            ];
-        }
+        // REMOVED: Hardcoded CS53 with grade 0.0 - let dynamic parser extract actual grade
         
         // TAB-BASED PATTERNS FOR THE 7 FAILING LINES - PDF uses tabs not spaces
         
@@ -1177,7 +1054,22 @@ class GradeExtractor {
                         $units = floatval($lastPartFields[0]);
                         $time = isset($lastPartFields[1]) ? $lastPartFields[1] : '';
                         $day = isset($lastPartFields[2]) ? $lastPartFields[2] : '';
-                        $grade = floatval(end($lastPartFields)); // Last element is grade
+                        $lastElement = end($lastPartFields);
+
+                        // CRITICAL FIX: Check if last element is actually a grade or just a day name
+                        // If it looks like a day pattern (e.g., "TueWF", "MWTh"), don't treat it as a grade
+                        if (preg_match('/^[A-Za-z]+$/', $lastElement)) {
+                            // Last element is text (day name), not a grade - this line has NO grade
+                            $grade = 0.0;
+                        } else {
+                            $grade = floatval($lastElement); // Last element is grade
+                        }
+                    } else if (count($lastPartFields) == 3) {
+                        // Format: units time day (NO grade)
+                        $units = floatval($lastPartFields[0]);
+                        $time = isset($lastPartFields[1]) ? $lastPartFields[1] : '';
+                        $day = isset($lastPartFields[2]) ? $lastPartFields[2] : '';
+                        $grade = 0.0; // No grade present
                     }
                 } else {
                     // Search through all parts for a potential grade (decimal number between 1.0-4.0)
@@ -1237,7 +1129,22 @@ class GradeExtractor {
                         }
                     }
                 }
-                
+
+                // CRITICAL FIX: Do not return rows where no valid grade was found
+                // If grade is 0.0, it means the grade column was empty in the PDF
+                // This prevents extracting fake grades or future semesters with no grades
+                if ($grade <= 0.0) {
+                    // For tab-based parsing, if we can't find a clear grade column,
+                    // this is likely a schedule/enrollment document, not grades
+                    return null; // Skip this row - no valid grade found
+                }
+
+                // Additional validation: Ensure this looks like a complete grade entry
+                // Must have subject code, name, and units
+                if (empty($subjectCode) || empty($subjectName) || $units <= 0) {
+                    return null; // Incomplete data, skip
+                }
+
                 return [
                     'subject_code' => $subjectCode,
                     'subject_type' => $subjectType,
@@ -1246,8 +1153,8 @@ class GradeExtractor {
                     'time' => $time,
                     'day' => $day,
                     'grade' => $grade,
-                    'letter_grade' => $grade > 0 ? $this->convertToLetterGrade($grade) : 'N/A',
-                    'remarks' => $grade > 0 ? $this->getRemarks($grade) : 'ONGOING'
+                    'letter_grade' => $this->convertToLetterGrade($grade),
+                    'remarks' => $this->getRemarks($grade)
                 ];
             }
         }
@@ -1372,37 +1279,43 @@ class GradeExtractor {
         
         // Pattern 2: Table format without grade (for incomplete subjects)
         // CS53 AP 4 IOS MOBILE APPLICATION DEVELOPMENT CROSS-PLATFORM 3.00 01:00PM-03:00PM MW
+        // IMPORTANT: If no grade column exists, return null to skip this row
         $pattern2 = '/^([A-Z]+\d+[A-Z]?)\s+([A-Z0-9\s\/\-]+?)\s+(.+?)\s+(\d+\.\d+)\s+([0-9:APMF\-]+)\s+([A-Za-z]+)$/';
-        
+
         if (preg_match($pattern2, $line, $matches)) {
-            return [
-                'subject_code' => trim($matches[1]),
-                'subject_type' => trim($matches[2]),
-                'subject_name' => trim($matches[3]),
-                'units' => floatval($matches[4]),
-                'time' => trim($matches[5]),
-                'day' => trim($matches[6]),
-                'grade' => 0.0, // No grade yet
-                'letter_grade' => 'N/A',
-                'remarks' => 'ONGOING'
-            ];
+            // No grade found in this pattern - skip this row
+            return null;
         }
         
         // Pattern 3: Simplified format with grade
         // CS20 MULTIMEDIA 3.00 1.8
         $pattern3 = '/^([A-Z]+\d+[A-Z]?)\s+(.+?)\s+(\d+\.\d+)\s+(\d+\.\d+)$/';
-        
+
         if (preg_match($pattern3, $line, $matches)) {
+            $units = floatval($matches[3]);
+            $grade = floatval($matches[4]);
+
+            // VALIDATION: Ensure grade is different from units
+            // If they're the same, this is likely a parsing error
+            if ($grade == $units) {
+                return null; // Skip - units confused with grade
+            }
+
+            // VALIDATION: Grade should be valid (1.0-4.0 range, or 5.0 for failed)
+            if ($grade < 1.0 || $grade > 5.0) {
+                return null; // Invalid grade value
+            }
+
             return [
                 'subject_code' => trim($matches[1]),
                 'subject_type' => '',
                 'subject_name' => trim($matches[2]),
-                'units' => floatval($matches[3]),
+                'units' => $units,
                 'time' => '',
                 'day' => '',
-                'grade' => floatval($matches[4]),
-                'letter_grade' => $this->convertToLetterGrade(floatval($matches[4])),
-                'remarks' => $this->getRemarks(floatval($matches[4]))
+                'grade' => $grade,
+                'letter_grade' => $this->convertToLetterGrade($grade),
+                'remarks' => $this->getRemarks($grade)
             ];
         }
         
@@ -1605,22 +1518,14 @@ class GradeExtractor {
             ];
         }
         
-        // Pattern 10: Professional electives
+        // Pattern 10: Professional electives WITHOUT grade
         // CS105 P ELEC 4 SYSTEMS INTEGRATION AND ARCHITECTURE 2
+        // IMPORTANT: No grade in this pattern - return null to skip
         $pattern10 = '/^([A-Z]+\d+[A-Z]?)\s+(P\s+ELEC)\s+(\d+)\s+(.+)$/';
-        
+
         if (preg_match($pattern10, $line, $matches)) {
-            return [
-                'subject_code' => trim($matches[1]),
-                'subject_type' => trim($matches[2]) . ' ' . trim($matches[3]),
-                'subject_name' => trim($matches[4]),
-                'units' => 0.0,
-                'time' => '',
-                'day' => '',
-                'grade' => 0.0,
-                'letter_grade' => 'N/A',
-                'remarks' => 'ONGOING'
-            ];
+            // No grade found - skip this row
+            return null;
         }
         
         // ADVANCED CATCH-ALL PATTERN: Parse the complete table format lines

@@ -99,6 +99,38 @@ document.addEventListener('DOMContentLoaded', function() {
         // Toggle notification dropdown
         notificationButton.addEventListener('click', function(e) {
             e.stopPropagation();
+
+            // Mark all notifications as read if there are unread ones
+            const unreadBadge = notificationButton.querySelector('span');
+            if (unreadBadge && unreadBadge.textContent.trim() !== '') {
+                fetch('../api/notifications.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'mark_all_read'
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Remove the unread badge
+                        if (unreadBadge) {
+                            unreadBadge.remove();
+                        }
+                        // Update notification items to remove "new" styling
+                        const notificationItems = notificationDropdown.querySelectorAll('.bg-blue-50');
+                        notificationItems.forEach(item => {
+                            item.classList.remove('bg-blue-50');
+                        });
+                    }
+                })
+                .catch(error => {
+                    console.error('Error marking notifications as read:', error);
+                });
+            }
+
             notificationDropdown.classList.toggle('hidden');
             profileDropdown.classList.add('hidden');
             if (typeof lucide !== 'undefined') lucide.createIcons();

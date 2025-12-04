@@ -43,7 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     
     if ($action === 'approve') {
         // Get application details first for notification
-        $get_app_query = "SELECT user_id, application_type FROM honor_applications WHERE id = :application_id";
+        $get_app_query = "SELECT ha.user_id, ha.application_type, u.first_name, u.last_name FROM honor_applications ha JOIN users u ON ha.user_id = u.id WHERE ha.id = :application_id";
         $get_app_stmt = $db->prepare($get_app_query);
         $get_app_stmt->bindParam(':application_id', $application_id);
         $get_app_stmt->execute();
@@ -70,7 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $chairperson = $chairperson_stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($chairperson) {
-                $notificationManager->notifyChairpersonApplicationStatusChanged($chairperson['id'], $student_name, $application_data['application_type'], 'approved', $department);
+                $notificationManager->notifyChairpersonApplicationStatusChanged($student_name, $application_data['application_type'], 'approved', $department);
             }
 
             $message = 'Application approved successfully!';
@@ -83,7 +83,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         $rejection_reason = $_POST['rejection_reason'] ?? '';
 
         // Get application details first for notification
-        $get_app_query = "SELECT user_id, application_type FROM honor_applications WHERE id = :application_id";
+        $get_app_query = "SELECT ha.user_id, ha.application_type, u.first_name, u.last_name FROM honor_applications ha JOIN users u ON ha.user_id = u.id WHERE ha.id = :application_id";
         $get_app_stmt = $db->prepare($get_app_query);
         $get_app_stmt->bindParam(':application_id', $application_id);
         $get_app_stmt->execute();
@@ -111,7 +111,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $chairperson = $chairperson_stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($chairperson) {
-                $notificationManager->notifyChairpersonApplicationStatusChanged($chairperson['id'], $student_name, $application_data['application_type'], 'denied', $department);
+                $notificationManager->notifyChairpersonApplicationStatusChanged($student_name, $application_data['application_type'], 'denied', $department);
             }
 
             $message = 'Application rejected successfully!';
@@ -134,8 +134,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         if (!$application_data) {
             $message = 'Application not found.';
             $message_type = 'error';
-        } elseif ($application_data['status'] !== 'approved') {
-            $message = 'Can only remove approved applications.';
+        } elseif ($application_data['status'] !== 'approved' && $application_data['status'] !== 'denied') {
+            $message = 'Can only remove approved or denied applications.';
             $message_type = 'error';
         } else {
             // Remove the approved application
@@ -217,7 +217,7 @@ if (!empty($adviser_sections)) {
               FROM honor_applications ha
               JOIN users u ON ha.user_id = u.id
               JOIN academic_periods ap ON ha.academic_period_id = ap.id
-              WHERE u.department = ? AND $section_where
+              WHERE u.department = ? AND $section_where AND ha.status != 'cancelled'
               ORDER BY ha.is_eligible ASC, ha.submitted_at DESC";
 
     $stmt = $db->prepare($query);
@@ -558,7 +558,7 @@ if ($filter !== 'all') {
                                                                 Reject
                                                             </button>
                                                         </div>
-                                                    <?php elseif ($application['status'] === 'approved'): ?>
+                                                    <?php elseif ($application['status'] === 'approved' || $application['status'] === 'denied'): ?>
                                                         <button onclick="showRemoveModal(<?php echo $application['id']; ?>)"
                                                                 class="inline-flex items-center px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium rounded-lg transition-colors">
                                                             <i data-lucide="trash-2" class="w-3 h-3 mr-1"></i>
@@ -622,7 +622,7 @@ if ($filter !== 'all') {
         <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-2xl bg-white">
             <div class="mt-3">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-lg font-semibold text-gray-900">Remove Approved Application</h3>
+                    <h3 class="text-lg font-semibold text-gray-900">Remove Application</h3>
                     <button onclick="hideRemoveModal()" class="text-gray-400 hover:text-gray-600">
                         <i data-lucide="x" class="w-5 h-5"></i>
                     </button>
@@ -631,7 +631,7 @@ if ($filter !== 'all') {
                     <div class="flex">
                         <i data-lucide="alert-triangle" class="w-5 h-5 text-amber-600 mr-2 flex-shrink-0"></i>
                         <p class="text-sm text-amber-800">
-                            <strong>Warning:</strong> This will remove an already approved application. The student will be notified.
+                            <strong>Warning:</strong> This will remove an already processed application. The student will be notified.
                         </p>
                     </div>
                 </div>
@@ -642,7 +642,7 @@ if ($filter !== 'all') {
                         <label for="removal_reason" class="block text-sm font-semibold text-gray-700 mb-2">Reason for Removal</label>
                         <textarea id="removal_reason" name="removal_reason" rows="3" required
                                   class="block w-full px-3 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500 transition-colors"
-                                  placeholder="Please provide a reason for removing this approved application..."></textarea>
+                                  placeholder="Please provide a reason for removing this application..."></textarea>
                         <p class="mt-1 text-xs text-gray-500">The student will see this reason in their notification.</p>
                     </div>
                     <div class="flex justify-end space-x-3">

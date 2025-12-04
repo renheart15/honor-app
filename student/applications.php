@@ -98,7 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
                 $period_list = array_column($available_periods, 'period_name');
                 $available_text = !empty($period_list) ? 'Available periods: ' . implode(', ', $period_list) : 'No periods available';
 
-                $message = 'You do not have any grades submitted for the selected academic period. ' . $available_text;
+                $message = 'You do not have any grades submitted for the selected academic period. ';
                 $message_type = 'error';
             } else {
                 // Process application submission
@@ -489,6 +489,29 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
                                     $honor_type = $type_labels[$application_type] ?? $application_type;
 
                                     $notificationManager->notifyChairpersonHonorApplicationSubmitted($chairperson['id'], $student_name, $application_type, $_SESSION['department']);
+                                }
+
+                                // Notify adviser about new application
+                                $adviser_query = "SELECT id FROM users WHERE role = 'adviser' AND department = :department AND status = 'active' LIMIT 1";
+                                $adviser_stmt = $db->prepare($adviser_query);
+                                $adviser_stmt->bindParam(':department', $_SESSION['department']);
+                                $adviser_stmt->execute();
+                                $adviser = $adviser_stmt->fetch(PDO::FETCH_ASSOC);
+
+                                if ($adviser) {
+                                    require_once '../classes/NotificationManager.php';
+                                    $notificationManager = new NotificationManager($db);
+
+                                    $student_name = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
+                                    $type_labels = [
+                                        'deans_list' => "Dean's List",
+                                        'cum_laude' => 'Cum Laude',
+                                        'magna_cum_laude' => 'Magna Cum Laude',
+                                        'summa_cum_laude' => 'Summa Cum Laude'
+                                    ];
+                                    $honor_type = $type_labels[$application_type] ?? $application_type;
+
+                                    $notificationManager->notifyAdviserApplicationSubmission($adviser['id'], $student_name, $application_type);
                                 }
 
                                 $message = 'Honor application ' . $action . ' successfully!' . ($is_eligible ? '' : ' Note: Your application does not meet eligibility requirements. Your adviser has been notified.');
