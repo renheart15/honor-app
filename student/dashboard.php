@@ -182,9 +182,9 @@ if ($overall_gwa_data) {
                         <i data-lucide="file-bar-chart" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
-                    <a href="profile.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                    <a href="settings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Profile
+                        Settings
                     </a>
                 </nav>
 
@@ -270,9 +270,9 @@ if ($overall_gwa_data) {
                                     <p class="text-xs text-gray-500"><?php echo $_SESSION['email']; ?></p>
                                 </div>
                                 <div class="py-2">
-                                    <a href="profile.php" class="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                                        <i data-lucide="user" class="w-4 h-4 mr-3 text-gray-400"></i>
-                                        My Profile
+                                    <a href="settings.php" class="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                                        <i data-lucide="settings" class="w-4 h-4 mr-3 text-gray-400"></i>
+                                        Settings
                                     </a>
                                     <a href="grades.php" class="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                                         <i data-lucide="bar-chart-3" class="w-4 h-4 mr-3 text-gray-400"></i>
@@ -299,11 +299,7 @@ if ($overall_gwa_data) {
             <main class="flex-1 overflow-y-auto">
                 <div class="p-4 sm:p-6 lg:p-8"> 
                     <!-- Stats Grid -->
-                    <?php
-                        $card_count = ($user_year_level == 4) ? 4 : 3;
-                        $lg_grid_class = "lg:grid-cols-" . $card_count;
-                    ?>
-                    <div class="grid grid-cols-1 md:grid-cols-2 <?php echo $lg_grid_class; ?> gap-6 mb-8">
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                         <!-- GWA Card -->
                         <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
                             <div class="flex items-center">
@@ -337,37 +333,35 @@ if ($overall_gwa_data) {
                             </div>
                         </div>
 
-                        <!-- Dean's List Eligibility -->
+                        <!-- Total Units -->
                         <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
                             <div class="flex items-center">
                                 <div class="w-12 h-12 bg-yellow-100 rounded-2xl flex items-center justify-center">
                                     <i data-lucide="award" class="w-6 h-6 text-yellow-600"></i>
                                 </div>
                                 <div class="ml-4">
-                                    <p class="text-sm font-medium text-gray-500">Dean's List</p>
-                                    <p class="text-2xl font-bold <?php echo $eligible_for_deans ? 'text-green-600' : 'text-gray-400'; ?>">
-                                        <?php echo $eligible_for_deans ? 'Eligible' : 'Not Eligible'; ?>
+                                    <p class="text-sm font-medium text-gray-500">Total Units</p>
+                                    <p class="text-2xl font-bold text-gray-900">
+                                        <?php echo $overall_gwa_data ? number_format($overall_gwa_data['total_units'], 0) : '0'; ?>
                                     </p>
                                 </div>
                             </div>
                         </div>
 
-                        <?php if ($user_year_level == 4): ?>
-                            <!-- Latin Honors Eligibility -->
-                            <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
-                                <div class="flex items-center">
-                                    <div class="w-12 h-12 bg-purple-100 rounded-2xl flex items-center justify-center">
-                                        <i data-lucide="crown" class="w-6 h-6 text-purple-600"></i>
-                                    </div>
-                                    <div class="ml-4">
-                                        <p class="text-sm font-medium text-gray-500">Latin Honors</p>
-                                        <p class="text-2xl font-bold <?php echo $eligible_for_latin ? 'text-green-600' : 'text-gray-400'; ?>">
-                                            <?php echo $eligible_for_latin ? 'Eligible' : 'Not Eligible'; ?>
-                                        </p>
-                                    </div>
+                        <!-- Year and Section -->
+                        <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
+                            <div class="flex items-center">
+                                <div class="w-12 h-12 bg-purple-100 rounded-2xl flex items-center justify-center">
+                                    <i data-lucide="crown" class="w-6 h-6 text-purple-600"></i>
+                                </div>
+                                <div class="ml-4">
+                                    <p class="text-sm font-medium text-gray-500">Year and Section</p>
+                                    <p class="text-2xl font-bold text-gray-900">
+                                        <?php echo $user_data['year_level'] ? 'Year ' . $user_data['year_level'] : 'N/A'; ?><?php echo $user_data['section'] ? ' - ' . htmlspecialchars($user_data['section']) : ''; ?>
+                                    </p>
                                 </div>
                             </div>
-                        <?php endif; ?>
+                        </div>
                         
                     </div>
 

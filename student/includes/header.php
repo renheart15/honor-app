@@ -6,7 +6,7 @@ if (!isset($notificationManager)) {
 
 // Get notifications for current user
 $user_id = $_SESSION['user_id'];
-$notifications = $notificationManager->getUserNotifications($user_id, 5);
+$notifications = $notificationManager->getUserNotifications($user_id, 20);
 $unread_count = $notificationManager->getUnreadCount($user_id);
 ?>
 
@@ -69,9 +69,9 @@ $unread_count = $notificationManager->getUnreadCount($user_id);
                 <i data-lucide="layout-dashboard" class="w-4 h-4 mr-3 text-gray-400"></i>
                 Dashboard
             </a>
-            <a href="profile.php" class="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
-                <i data-lucide="user" class="w-4 h-4 mr-3 text-gray-400"></i>
-                My Profile
+            <a href="settings.php" class="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
+                <i data-lucide="settings" class="w-4 h-4 mr-3 text-gray-400"></i>
+                Settings
             </a>
             <a href="grades.php" class="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">
                 <i data-lucide="bar-chart-3" class="w-4 h-4 mr-3 text-gray-400"></i>

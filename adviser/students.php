@@ -61,11 +61,23 @@ if (!empty($adviser_sections)) {
 
     $section_where = '(' . implode(' OR ', $section_conditions) . ')';
 
-    $query = "SELECT u.*, gwa.gwa, gwa.calculated_at,
+    $query = "SELECT DISTINCT u.*,
+                     -- Calculate overall GWA from all grades across all semesters
+                     (SELECT
+                         CASE WHEN SUM(g.units) > 0 THEN
+                             SUM(g.units * g.grade) / SUM(g.units)
+                         ELSE NULL END
+                      FROM grades g
+                      JOIN grade_submissions gs ON g.submission_id = gs.id
+                      WHERE gs.user_id = u.id
+                      AND g.grade > 0.00
+                      AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
+                     ) as gwa,
+                     -- Get most recent calculation date
+                     (SELECT calculated_at FROM gwa_calculations WHERE user_id = u.id ORDER BY calculated_at DESC LIMIT 1) as calculated_at,
                      (SELECT COUNT(*) FROM grade_submissions gs WHERE gs.user_id = u.id) as submission_count,
                      (SELECT COUNT(*) FROM honor_applications ha WHERE ha.user_id = u.id) as application_count
               FROM users u
-              LEFT JOIN gwa_calculations gwa ON u.id = gwa.user_id
               WHERE u.role = 'student' AND u.department = ? AND $section_where AND u.status = 'active'
               ORDER BY u.last_name, u.first_name";
     $stmt = $db->prepare($query);
@@ -103,6 +115,112 @@ if (!empty($search)) {
                strpos(strtolower($student['email']), $searchTerm) !== false;
     });
 }
+
+// Calculate honor eligibility for each student (same logic as applications.php)
+foreach ($students as &$student) {
+    $student['honor_status'] = 'Not Eligible';
+    $student['honor_color'] = 'gray';
+    $student['honor_criteria'] = '';
+
+    if ($student['gwa']) {
+        $gwa = floatval($student['gwa']);
+
+        // Check for approved Latin honors first (same as applications.php logic)
+        $latin_honors_query = "
+            SELECT COUNT(*) as has_latin_honors
+            FROM honor_applications ha
+            WHERE ha.user_id = :user_id
+            AND ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')
+            AND ha.status = 'final_approved'
+        ";
+        $latin_stmt = $db->prepare($latin_honors_query);
+        $latin_stmt->bindParam(':user_id', $student['id']);
+        $latin_stmt->execute();
+        $latin_result = $latin_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($latin_result['has_latin_honors'] > 0) {
+            $student['honor_status'] = 'Latin Honors';
+            $student['honor_color'] = 'yellow';
+            $student['honor_criteria'] = 'Approved Latin Honors application';
+        } else {
+            // Check for grades above 2.5 (same logic as applications.php)
+            $grade_check_query = "SELECT COUNT(*) as count
+                                  FROM grades g
+                                  JOIN grade_submissions gs ON g.submission_id = gs.id
+                                  WHERE gs.user_id = :user_id
+                                  AND g.grade > 2.5
+                                  AND gs.status = 'processed'";
+            $grade_check_stmt = $db->prepare($grade_check_query);
+            $grade_check_stmt->bindParam(':user_id', $student['id']);
+            $grade_check_stmt->execute();
+            $grade_check = $grade_check_stmt->fetch(PDO::FETCH_ASSOC);
+            $has_grade_above_25 = ($grade_check['count'] > 0);
+
+            // Check for ongoing grades (grade = 0.00)
+            $ongoing_grades_query = "SELECT COUNT(*) as count
+                                    FROM grades g
+                                    JOIN grade_submissions gs ON g.submission_id = gs.id
+                                    WHERE gs.user_id = :user_id
+                                    AND g.grade = 0.00
+                                    AND gs.status = 'processed'";
+            $ongoing_grades_stmt = $db->prepare($ongoing_grades_query);
+            $ongoing_grades_stmt->bindParam(':user_id', $student['id']);
+            $ongoing_grades_stmt->execute();
+            $ongoing_grades = $ongoing_grades_stmt->fetch(PDO::FETCH_ASSOC);
+            $has_ongoing_grades = ($ongoing_grades['count'] > 0);
+
+            // Count total semesters completed (same logic as applications.php)
+            $semester_count_query = "
+                SELECT COUNT(DISTINCT g.semester_taken) as semesters
+                FROM grades g
+                JOIN grade_submissions gs ON g.submission_id = gs.id
+                WHERE gs.user_id = :user_id AND gs.status = 'processed'
+                AND (g.semester_taken LIKE '%1st Semester%' OR g.semester_taken LIKE '%2nd Semester%')
+            ";
+            $semester_count_stmt = $db->prepare($semester_count_query);
+            $semester_count_stmt->bindParam(':user_id', $student['id']);
+            $semester_count_stmt->execute();
+            $semester_data = $semester_count_stmt->fetch(PDO::FETCH_ASSOC);
+            $total_semesters = $semester_data['semesters'] ?? 0;
+
+            // Determine eligibility using same logic as applications.php
+            if (!$has_grade_above_25) {
+                // Dean's List eligibility (for all year levels)
+                if ($gwa >= 1.00 && $gwa <= 1.75) {
+                    $student['honor_status'] = "Dean's List";
+                    $student['honor_color'] = 'green';
+                    $student['honor_criteria'] = 'GWA ≤ 1.75, no grade > 2.5';
+                } else {
+                    $student['honor_criteria'] = 'GWA > 1.75 or has grade > 2.5';
+                }
+
+                // Latin Honors eligibility (only for students with 8+ semesters and no ongoing grades)
+                if ($total_semesters >= 8 && !$has_ongoing_grades && !$has_grade_above_25) {
+                    if ($gwa >= 1.00 && $gwa <= 1.25) {
+                        $student['honor_status'] = 'Summa Cum Laude';
+                        $student['honor_color'] = 'purple';
+                        $student['honor_criteria'] = 'GWA ≤ 1.25, 8+ semesters';
+                    } elseif ($gwa >= 1.26 && $gwa <= 1.45) {
+                        $student['honor_status'] = 'Magna Cum Laude';
+                        $student['honor_color'] = 'purple';
+                        $student['honor_criteria'] = 'GWA ≤ 1.45, 8+ semesters';
+                    } elseif ($gwa >= 1.46 && $gwa <= 1.75) {
+                        $student['honor_status'] = 'Cum Laude';
+                        $student['honor_color'] = 'purple';
+                        $student['honor_criteria'] = 'GWA ≤ 1.75, 8+ semesters';
+                    }
+                } elseif ($total_semesters < 8) {
+                    $student['honor_criteria'] = 'GWA > 1.75 or < 8 semesters completed';
+                } elseif ($has_ongoing_grades) {
+                    $student['honor_criteria'] = 'GWA > 1.75 or has ongoing grades';
+                }
+            } else {
+                $student['honor_criteria'] = 'Has grade(s) above 2.5';
+            }
+        }
+    }
+}
+unset($student); // Break the reference
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -179,6 +297,10 @@ if (!empty($search)) {
                         <i data-lucide="bar-chart-3" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
+                    <a href="settings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Settings
+                    </a>
                 </nav>
 
                 <!-- Logout -->
@@ -227,21 +349,19 @@ if (!empty($search)) {
                     
                     <div class="flex items-center space-x-4">
                         <div class="relative">
-                            <input type="text" id="searchInput" placeholder="Search students..." 
+                            <input type="text" id="searchInput" placeholder="Search students..."
                                    value="<?php echo htmlspecialchars($search); ?>"
                                    class="pl-10 pr-4 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
                             <i data-lucide="search" class="absolute left-3 top-2.5 h-4 w-4 text-gray-400"></i>
                         </div>
-                        <select onchange="filterStudents(this.value)" 
+                        <select onchange="filterStudents(this.value)"
                                 class="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
                             <option value="all" <?php echo $filter === 'all' ? 'selected' : ''; ?>>All Students</option>
                             <option value="with_gwa" <?php echo $filter === 'with_gwa' ? 'selected' : ''; ?>>With GWA</option>
                             <option value="honor_eligible" <?php echo $filter === 'honor_eligible' ? 'selected' : ''; ?>>Honor Eligible</option>
                             <option value="dean_list" <?php echo $filter === 'dean_list' ? 'selected' : ''; ?>>Dean's List</option>
                         </select>
-                    </div>
 
-                    <div class="flex items-center space-x-4">
                         <?php include 'includes/header.php'; ?>
                     </div>
                 </div>

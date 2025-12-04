@@ -4,7 +4,8 @@
       "Bash(php -r:*)",
       "Bash(php debug_submission_issue.php:*)",
       "Bash(php -l:*)",
-      "Bash(php:*)"
+      "Bash(php:*)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

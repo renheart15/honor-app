@@ -468,6 +468,29 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['apply'])) {
                                     }
                                 }
 
+                                // Notify chairperson about new application
+                                $chairperson_query = "SELECT id FROM users WHERE role = 'chairperson' AND department = :department AND status = 'active' LIMIT 1";
+                                $chairperson_stmt = $db->prepare($chairperson_query);
+                                $chairperson_stmt->bindParam(':department', $_SESSION['department']);
+                                $chairperson_stmt->execute();
+                                $chairperson = $chairperson_stmt->fetch(PDO::FETCH_ASSOC);
+
+                                if ($chairperson) {
+                                    require_once '../classes/NotificationManager.php';
+                                    $notificationManager = new NotificationManager($db);
+
+                                    $student_name = $_SESSION['first_name'] . ' ' . $_SESSION['last_name'];
+                                    $type_labels = [
+                                        'deans_list' => "Dean's List",
+                                        'cum_laude' => 'Cum Laude',
+                                        'magna_cum_laude' => 'Magna Cum Laude',
+                                        'summa_cum_laude' => 'Summa Cum Laude'
+                                    ];
+                                    $honor_type = $type_labels[$application_type] ?? $application_type;
+
+                                    $notificationManager->notifyChairpersonHonorApplicationSubmitted($chairperson['id'], $student_name, $application_type, $_SESSION['department']);
+                                }
+
                                 $message = 'Honor application ' . $action . ' successfully!' . ($is_eligible ? '' : ' Note: Your application does not meet eligibility requirements. Your adviser has been notified.');
                                 $message_type = 'success';
                             } else {
@@ -885,9 +908,9 @@ if ($gwa_data) {
                         <i data-lucide="file-bar-chart" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
-                    <a href="profile.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                    <a href="settings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Profile
+                        Settings
                     </a>
                 </nav>
 
@@ -1382,6 +1405,14 @@ if ($gwa_data) {
                                                         echo $status_labels[$app['status']] ?? ucfirst($app['status']);
                                                         ?>
                                                     </span>
+                                                    <div class="mt-2 text-xs text-center">
+                                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium
+                                                            <?php echo isset($app['is_eligible']) && $app['is_eligible'] ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'; ?>">
+                                                            <i data-lucide="<?php echo isset($app['is_eligible']) && $app['is_eligible'] ? 'check-circle' : 'alert-triangle'; ?>"
+                                                               class="w-3 h-3 mr-1"></i>
+                                                            <?php echo isset($app['is_eligible']) && $app['is_eligible'] ? 'Eligible' : 'Not Eligible'; ?>
+                                                        </span>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>

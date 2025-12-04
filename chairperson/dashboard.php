@@ -35,18 +35,27 @@ $stmt->bindParam(':department', $department);
 $stmt->execute();
 $stats['total_advisers'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
-// Honor applications pending approval
-$query = "SELECT COUNT(*) as count FROM honor_applications ha 
-          JOIN users u ON ha.user_id = u.id 
-          WHERE ha.status IN ('submitted', 'under_review') AND u.department = :department";
+// Honor applications pending approval (using actual database statuses)
+$query = "SELECT COUNT(*) as count FROM honor_applications ha
+          JOIN users u ON ha.user_id = u.id
+          WHERE ha.status IN ('submitted', 'under_review', 'pending') AND u.department = :department";
 $stmt = $db->prepare($query);
 $stmt->bindParam(':department', $department);
 $stmt->execute();
 $stats['pending_applications'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
+// Approved applications (using actual database status)
+$query = "SELECT COUNT(*) as count FROM honor_applications ha
+          JOIN users u ON ha.user_id = u.id
+          WHERE ha.status = 'approved' AND u.department = :department";
+$stmt = $db->prepare($query);
+$stmt->bindParam(':department', $department);
+$stmt->execute();
+$stats['approved_applications'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
+
 // Students eligible for honors this semester
-$query = "SELECT COUNT(*) as count FROM gwa_calculations gwa 
-          JOIN users u ON gwa.user_id = u.id 
+$query = "SELECT COUNT(*) as count FROM gwa_calculations gwa
+          JOIN users u ON gwa.user_id = u.id
           WHERE u.department = :department AND u.status = 'active' AND gwa.gwa <= 1.75";
 $stmt = $db->prepare($query);
 $stmt->bindParam(':department', $department);
@@ -65,37 +74,20 @@ $stmt->bindParam(':department', $department);
 $stmt->execute();
 $recent_applications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Top performing students
-$query = "SELECT u.first_name, u.last_name, u.student_id, u.section, gwa.gwa 
-          FROM gwa_calculations gwa 
-          JOIN users u ON gwa.user_id = u.id 
-          WHERE u.department = :department AND u.status = 'active' 
-          ORDER BY gwa.gwa ASC 
+// Top performing students (one entry per student with their best GWA)
+$query = "SELECT u.first_name, u.last_name, u.student_id, u.section, MIN(gwa.gwa) as gwa
+          FROM gwa_calculations gwa
+          JOIN users u ON gwa.user_id = u.id
+          WHERE u.department = :department AND u.status = 'active'
+          GROUP BY u.id, u.first_name, u.last_name, u.student_id, u.section
+          ORDER BY gwa ASC
           LIMIT 5";
 $stmt = $db->prepare($query);
 $stmt->bindParam(':department', $department);
 $stmt->execute();
 $top_students = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Department summary by year level
-$query = "SELECT u.year_level, COUNT(*) as student_count, AVG(gwa.gwa) as avg_gwa
-          FROM users u 
-          LEFT JOIN gwa_calculations gwa ON u.id = gwa.user_id
-          WHERE u.role = 'student' AND u.department = :department AND u.status = 'active'
-          GROUP BY u.year_level 
-          ORDER BY u.year_level";
-$stmt = $db->prepare($query);
-$stmt->bindParam(':department', $department);
-$stmt->execute();
-$year_summary = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-function getOrdinalSuffix($number) {
-    $ends = array('th','st','nd','rd','th','th','th','th','th','th');
-    if ((($number % 100) >= 11) && (($number % 100) <= 13))
-        return 'th';
-    else
-        return $ends[$number % 10];
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -235,7 +227,7 @@ function getOrdinalSuffix($number) {
                                 </div>
                                 <?php if (!empty($notifications)): ?>
                                     <div class="p-3 border-t border-gray-200 text-center">
-                                        <a href="#" class="text-sm text-primary-600 hover:text-primary-700 font-medium">View all notifications</a>
+                                        <a href="notifications.php" class="text-sm text-primary-600 hover:text-primary-700 font-medium">View all notifications</a>
                                     </div>
                                 <?php endif; ?>
                             </div>
@@ -324,12 +316,12 @@ function getOrdinalSuffix($number) {
 
                         <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
                             <div class="flex items-center">
-                                <div class="w-12 h-12 bg-purple-100 rounded-2xl flex items-center justify-center">
-                                    <i data-lucide="trophy" class="w-6 h-6 text-purple-600"></i>
+                                <div class="w-12 h-12 bg-green-100 rounded-2xl flex items-center justify-center">
+                                    <i data-lucide="check-circle" class="w-6 h-6 text-green-600"></i>
                                 </div>
                                 <div class="ml-4">
-                                    <p class="text-sm font-medium text-gray-500">Honor Eligible</p>
-                                    <p class="text-2xl font-bold text-gray-900"><?php echo $stats['eligible_students']; ?></p>
+                                    <p class="text-sm font-medium text-gray-500">Approved Applications</p>
+                                    <p class="text-2xl font-bold text-gray-900"><?php echo $stats['approved_applications'] ?? 0; ?></p>
                                 </div>
                             </div>
                         </div>
@@ -416,42 +408,7 @@ function getOrdinalSuffix($number) {
                         </div>
                     </div>
 
-                    <!-- Year Level Summary -->
-                    <div class="mt-8 bg-white rounded-2xl shadow-sm border border-gray-200">
-                        <div class="p-6 border-b border-gray-200">
-                            <h3 class="text-lg font-semibold text-gray-900 flex items-center">
-                                <i data-lucide="bar-chart-3" class="w-5 h-5 text-blue-600 mr-2"></i>
-                                Department Summary by Year Level
-                            </h3>
-                        </div>
-                        <div class="p-6">
-                            <?php if (empty($year_summary)): ?>
-                                <div class="text-center py-6">
-                                    <i data-lucide="users" class="w-12 h-12 text-gray-300 mx-auto mb-4"></i>
-                                    <p class="text-gray-500">No student data available</p>
-                                </div>
-                            <?php else: ?>
-                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                                    <?php foreach ($year_summary as $year): ?>
-                                        <div class="bg-gray-50 rounded-xl p-6 text-center">
-                                            <h4 class="text-2xl font-bold text-primary-600 mb-2"><?php echo $year['year_level'] ? $year['year_level'] . getOrdinalSuffix($year['year_level']) : 'N/A'; ?></h4>
-                                            <p class="text-sm text-gray-600 mb-4">Year Level</p>
-                                            <div class="grid grid-cols-2 gap-4">
-                                                <div>
-                                                    <div class="text-lg font-bold text-gray-900"><?php echo $year['student_count']; ?></div>
-                                                    <div class="text-xs text-gray-500">Students</div>
-                                                </div>
-                                                <div>
-                                                    <div class="text-lg font-bold text-gray-900"><?php echo $year['avg_gwa'] ? formatGWA($year['avg_gwa']) : 'N/A'; ?></div>
-                                                    <div class="text-xs text-gray-500">Avg GWA</div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
+
 
                     <!-- Quick Actions -->
                     <div class="mt-8 bg-white rounded-2xl shadow-sm border border-gray-200">

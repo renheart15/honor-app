@@ -61,6 +61,18 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $notificationManager = new NotificationManager($db);
             $notificationManager->notifyApplicationStatus($application_data['user_id'], 'approved', $application_data['application_type']);
 
+            // Notify chairperson about application status change
+            $student_name = $application_data['first_name'] . ' ' . $application_data['last_name'];
+            $chairperson_query = "SELECT id FROM users WHERE role = 'chairperson' AND department = :department AND status = 'active' LIMIT 1";
+            $chairperson_stmt = $db->prepare($chairperson_query);
+            $chairperson_stmt->bindParam(':department', $department);
+            $chairperson_stmt->execute();
+            $chairperson = $chairperson_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($chairperson) {
+                $notificationManager->notifyChairpersonApplicationStatusChanged($chairperson['id'], $student_name, $application_data['application_type'], 'approved', $department);
+            }
+
             $message = 'Application approved successfully!';
             $message_type = 'success';
         } else {
@@ -89,6 +101,18 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             // Notify student about rejection
             $notificationManager = new NotificationManager($db);
             $notificationManager->notifyApplicationStatus($application_data['user_id'], 'rejected', $application_data['application_type']);
+
+            // Notify chairperson about application status change
+            $student_name = $application_data['first_name'] . ' ' . $application_data['last_name'];
+            $chairperson_query = "SELECT id FROM users WHERE role = 'chairperson' AND department = :department AND status = 'active' LIMIT 1";
+            $chairperson_stmt = $db->prepare($chairperson_query);
+            $chairperson_stmt->bindParam(':department', $department);
+            $chairperson_stmt->execute();
+            $chairperson = $chairperson_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($chairperson) {
+                $notificationManager->notifyChairpersonApplicationStatusChanged($chairperson['id'], $student_name, $application_data['application_type'], 'denied', $department);
+            }
 
             $message = 'Application rejected successfully!';
             $message_type = 'success';
@@ -323,6 +347,10 @@ if ($filter !== 'all') {
                         <i data-lucide="bar-chart-3" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
+                    <a href="settings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Settings
+                    </a>
                 </nav>
 
                 <!-- Logout -->
@@ -370,25 +398,6 @@ if ($filter !== 'all') {
                     </div>
                     
                     <div class="flex items-center space-x-4">
-                        <!-- Notification Bell -->
-                        <div class="relative">
-                            <button onclick="toggleNotifications()" class="relative p-2 text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 rounded-xl">
-                                <i data-lucide="bell" class="h-6 w-6"></i>
-                                <span id="notificationBadge" class="hidden absolute top-0 right-0 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white transform translate-x-1/2 -translate-y-1/2 bg-red-600 rounded-full"></span>
-                            </button>
-
-                            <!-- Notification Dropdown -->
-                            <div id="notificationPanel" class="hidden absolute right-0 mt-2 w-96 bg-white rounded-xl shadow-lg border border-gray-200 z-50 max-h-96 overflow-y-auto">
-                                <div class="p-4 border-b border-gray-200 flex items-center justify-between">
-                                    <h3 class="text-lg font-semibold text-gray-900">Notifications</h3>
-                                    <button onclick="markAllAsRead()" class="text-sm text-primary-600 hover:text-primary-700">Mark all read</button>
-                                </div>
-                                <div id="notificationList" class="divide-y divide-gray-200">
-                                    <div class="p-4 text-center text-gray-500">Loading...</div>
-                                </div>
-                            </div>
-                        </div>
-
                         <select onchange="filterApplications(this.value)"
                                 class="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
                             <option value="all" <?php echo $filter === 'all' ? 'selected' : ''; ?>>All Applications</option>
@@ -396,9 +405,7 @@ if ($filter !== 'all') {
                             <option value="approved" <?php echo $filter === 'approved' ? 'selected' : ''; ?>>Approved</option>
                             <option value="rejected" <?php echo $filter === 'rejected' ? 'selected' : ''; ?>>Rejected</option>
                         </select>
-                    </div>
 
-                    <div class="flex items-center space-x-4">
                         <?php include 'includes/header.php'; ?>
                     </div>
                 </div>
@@ -540,7 +547,7 @@ if ($filter !== 'all') {
                                                 <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium">
                                                     <?php if ($application['status'] === 'submitted'): ?>
                                                         <div class="flex justify-center space-x-2">
-                                                            <button onclick="processApplication(<?php echo $application['id']; ?>, 'approve')"
+                                                            <button onclick="processApplication(<?php echo $application['id']; ?>, 'approve', <?php echo $application['is_eligible'] ? 'true' : 'false'; ?>, '<?php echo addslashes($application['ineligibility_reasons'] ?? ''); ?>')"
                                                                     class="inline-flex items-center px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition-colors">
                                                                 <i data-lucide="check" class="w-3 h-3 mr-1"></i>
                                                                 Approve
@@ -653,6 +660,44 @@ if ($filter !== 'all') {
         </div>
     </div>
 
+    <!-- Approve Ineligible Application Modal -->
+    <div id="approveIneligibleModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 z-50 hidden flex items-center justify-center">
+        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-2xl bg-white">
+            <div class="mt-3">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-gray-900">Approve Ineligible Application</h3>
+                    <button onclick="hideApproveIneligibleModal()" class="text-gray-400 hover:text-gray-600">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+                <div class="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
+                    <div class="flex">
+                        <i data-lucide="alert-triangle" class="w-5 h-5 text-red-600 mr-2 flex-shrink-0"></i>
+                        <p class="text-sm text-red-800 mb-2">
+                            <strong>Warning:</strong> This application is not eligible for approval based on current criteria.
+                        </p>
+                        <div id="ineligibilityReasons" class="text-sm text-red-700">
+                            <!-- Reasons will be populated by JavaScript -->
+                        </div>
+                    </div>
+                </div>
+                <p class="text-sm text-gray-600 mb-4">
+                    Are you sure you want to approve this application despite the ineligibility?
+                </p>
+                <div class="flex justify-end space-x-3">
+                    <button type="button" onclick="hideApproveIneligibleModal()"
+                            class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl transition-colors">
+                        Cancel
+                    </button>
+                    <button type="button" onclick="confirmApproveIneligible()"
+                            class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl transition-colors">
+                        Approve Anyway
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         lucide.createIcons();
 
@@ -660,17 +705,32 @@ if ($filter !== 'all') {
             window.location.href = 'applications.php?filter=' + filter;
         }
 
-        function processApplication(applicationId, action) {
-            if (action === 'approve' && confirm('Are you sure you want to approve this application?')) {
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.innerHTML = `
-                    <input type="hidden" name="application_id" value="${applicationId}">
-                    <input type="hidden" name="action" value="approve">
-                `;
-                document.body.appendChild(form);
-                form.submit();
+        let pendingApprovalId = null;
+
+        function processApplication(applicationId, action, isEligible, ineligibilityReasons) {
+            if (action === 'approve') {
+                if (isEligible) {
+                    // For eligible applications, use simple confirmation
+                    if (confirm('Are you sure you want to approve this application?')) {
+                        submitApproval(applicationId);
+                    }
+                } else {
+                    // For ineligible applications, show detailed modal
+                    pendingApprovalId = applicationId;
+                    showApproveIneligibleModal(ineligibilityReasons);
+                }
             }
+        }
+
+        function submitApproval(applicationId) {
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.innerHTML = `
+                <input type="hidden" name="application_id" value="${applicationId}">
+                <input type="hidden" name="action" value="approve">
+            `;
+            document.body.appendChild(form);
+            form.submit();
         }
 
         function showRejectModal(applicationId) {
@@ -692,144 +752,36 @@ if ($filter !== 'all') {
             document.getElementById('removeModal').classList.add('hidden');
         }
 
-        // Notification System
-        let notificationPanelOpen = false;
-
-        function toggleNotifications() {
-            const panel = document.getElementById('notificationPanel');
-            notificationPanelOpen = !notificationPanelOpen;
-
-            if (notificationPanelOpen) {
-                panel.classList.remove('hidden');
-                loadNotifications();
-            } else {
-                panel.classList.add('hidden');
+        function showApproveIneligibleModal(ineligibilityReasons) {
+            // Format the ineligibility reasons for better display
+            let formattedReasons = '';
+            if (ineligibilityReasons && ineligibilityReasons.trim()) {
+                // Split by semicolon and create bullet points
+                const reasons = ineligibilityReasons.split(';').map(reason => reason.trim()).filter(reason => reason.length > 0);
+                if (reasons.length > 0) {
+                    formattedReasons = '<ul class="list-disc list-inside space-y-1 mt-2">';
+                    reasons.forEach(reason => {
+                        formattedReasons += '<li>' + reason + '</li>';
+                    });
+                    formattedReasons += '</ul>';
+                }
             }
-        }
-
-        function loadNotifications() {
-            fetch('../api/notifications.php')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        displayNotifications(data.notifications);
-                        updateNotificationBadge(data.unread_count);
-                    }
-                })
-                .catch(error => console.error('Error loading notifications:', error));
-        }
-
-        function displayNotifications(notifications) {
-            const list = document.getElementById('notificationList');
-
-            if (notifications.length === 0) {
-                list.innerHTML = '<div class="p-4 text-center text-gray-500">No notifications</div>';
-                return;
-            }
-
-            list.innerHTML = notifications.map(notif => `
-                <div class="p-4 hover:bg-gray-50 ${notif.is_read == 0 ? 'bg-blue-50' : ''} cursor-pointer" onclick="markAsRead(${notif.id})">
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="w-10 h-10 rounded-full flex items-center justify-center ${
-                                notif.type === 'warning' ? 'bg-amber-100' :
-                                notif.type === 'success' ? 'bg-green-100' :
-                                notif.type === 'error' ? 'bg-red-100' : 'bg-blue-100'
-                            }">
-                                <i data-lucide="${
-                                    notif.type === 'warning' ? 'alert-triangle' :
-                                    notif.type === 'success' ? 'check-circle' :
-                                    notif.type === 'error' ? 'x-circle' : 'info'
-                                }" class="w-5 h-5 ${
-                                    notif.type === 'warning' ? 'text-amber-600' :
-                                    notif.type === 'success' ? 'text-green-600' :
-                                    notif.type === 'error' ? 'text-red-600' : 'text-blue-600'
-                                }"></i>
-                            </div>
-                        </div>
-                        <div class="ml-3 flex-1">
-                            <p class="text-sm font-semibold text-gray-900">${notif.title}</p>
-                            <p class="text-sm text-gray-600 mt-1">${notif.message}</p>
-                            <p class="text-xs text-gray-400 mt-1">${formatDate(notif.created_at)}</p>
-                        </div>
-                        ${notif.is_read == 0 ? '<div class="ml-2"><span class="inline-block w-2 h-2 bg-blue-600 rounded-full"></span></div>' : ''}
-                    </div>
-                </div>
-            `).join('');
-
-            // Recreate icons after updating DOM
+            document.getElementById('ineligibilityReasons').innerHTML = formattedReasons;
+            document.getElementById('approveIneligibleModal').classList.remove('hidden');
             lucide.createIcons();
         }
 
-        function updateNotificationBadge(count) {
-            const badge = document.getElementById('notificationBadge');
-            if (count > 0) {
-                badge.textContent = count > 9 ? '9+' : count;
-                badge.classList.remove('hidden');
-            } else {
-                badge.classList.add('hidden');
+        function hideApproveIneligibleModal() {
+            document.getElementById('approveIneligibleModal').classList.add('hidden');
+        }
+
+        function confirmApproveIneligible() {
+            if (pendingApprovalId) {
+                submitApproval(pendingApprovalId);
             }
+            hideApproveIneligibleModal();
         }
 
-        function markAsRead(notificationId) {
-            fetch('../api/notifications.php', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({action: 'mark_read', notification_id: notificationId})
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    loadNotifications();
-                }
-            });
-        }
-
-        function markAllAsRead() {
-            fetch('../api/notifications.php', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({action: 'mark_all_read'})
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    loadNotifications();
-                }
-            });
-        }
-
-        function formatDate(dateString) {
-            const date = new Date(dateString);
-            const now = new Date();
-            const diffMs = now - date;
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMs / 3600000);
-            const diffDays = Math.floor(diffMs / 86400000);
-
-            if (diffMins < 1) return 'Just now';
-            if (diffMins < 60) return `${diffMins} min${diffMins > 1 ? 's' : ''} ago`;
-            if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-            if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-            return date.toLocaleDateString();
-        }
-
-        // Close notification panel when clicking outside
-        document.addEventListener('click', function(event) {
-            const panel = document.getElementById('notificationPanel');
-            const button = event.target.closest('button[onclick="toggleNotifications()"]');
-
-            if (notificationPanelOpen && !panel.contains(event.target) && !button) {
-                toggleNotifications();
-            }
-        });
-
-        // Load notifications on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            loadNotifications();
-            // Refresh notifications every 30 seconds
-            setInterval(loadNotifications, 30000);
-        });
     </script>
 </body>
 </html>

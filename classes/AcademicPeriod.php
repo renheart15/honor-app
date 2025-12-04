@@ -55,6 +55,9 @@ class AcademicPeriod {
 
                     // Notify advisers
                     $notificationManager->notifyAdviserAcademicPeriod($semester, $period['school_year'], $period['end_date'], true);
+
+                    // Notify chairpersons
+                    $notificationManager->notifyChairpersonAcademicPeriod($semester, $period['school_year'], $period['end_date'], true);
                 }
             }
 
@@ -176,11 +179,12 @@ class AcademicPeriod {
                 if ($period) {
                     $semester = $period['semester'] === '1st' ? '1st' : ($period['semester'] === '2nd' ? '2nd' : ucfirst($period['semester']));
 
-                    // Send notification to all students and advisers
+                    // Send notification to all students, advisers, and chairpersons
                     require_once 'NotificationManager.php';
                     $notificationManager = new NotificationManager($this->conn);
                     $notificationManager->notifyAcademicPeriodOpened($semester, $period['school_year'], $period['end_date']);
                     $notificationManager->notifyAdviserAcademicPeriod($semester, $period['school_year'], $period['end_date'], false);
+                    $notificationManager->notifyChairpersonAcademicPeriod($semester, $period['school_year'], $period['end_date'], false);
                 }
                 return true;
             }
@@ -224,11 +228,12 @@ class AcademicPeriod {
                 if ($period) {
                     $semester = $period['semester'] === '1st' ? '1st' : ($period['semester'] === '2nd' ? '2nd' : ucfirst($period['semester']));
 
-                    // Send notification to all students and advisers
+                    // Send notification to all students, advisers, and chairpersons
                     require_once 'NotificationManager.php';
                     $notificationManager = new NotificationManager($this->conn);
                     $notificationManager->notifyAcademicPeriodOpened($semester, $period['school_year'], $end_date);
                     $notificationManager->notifyAdviserAcademicPeriod($semester, $period['school_year'], $end_date, false);
+                    $notificationManager->notifyChairpersonAcademicPeriod($semester, $period['school_year'], $end_date, false);
                 }
                 return true;
             }

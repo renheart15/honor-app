@@ -398,6 +398,9 @@ $html .= '
         <br/>
         <p style="font-weight: bold; margin: 0; padding: 0;">' . htmlspecialchars($chairperson_name) . '</p>
         <p style="margin: 0; padding: 0;">Chairperson, ' . htmlspecialchars($department_abbr) . '</p>
+        <br/><br/><br/>
+        <p style="margin: 0; padding: 0;">_________________________________</p>
+        <p style="margin: 0; padding: 0;">Dean of Technology</p>
     </div>
 </body>
 </html>';

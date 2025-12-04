@@ -8,8 +8,8 @@ class NotificationManager {
     }
 
     public function createNotification($user_id, $title, $message, $type = 'info', $category = 'general') {
-        $query = "INSERT INTO " . $this->table_name . " 
-                  SET user_id=:user_id, title=:title, message=:message, 
+        $query = "INSERT INTO " . $this->table_name . "
+                  SET user_id=:user_id, title=:title, message=:message,
                       type=:type, category=:category";
 
         $stmt = $this->conn->prepare($query);
@@ -35,9 +35,9 @@ class NotificationManager {
     }
 
     public function getUserNotifications($user_id, $limit = 10) {
-        $query = "SELECT * FROM " . $this->table_name . " 
-                  WHERE user_id = :user_id 
-                  ORDER BY created_at DESC 
+        $query = "SELECT * FROM " . $this->table_name . "
+                  WHERE user_id = :user_id
+                  ORDER BY created_at DESC
                   LIMIT :limit";
 
         $stmt = $this->conn->prepare($query);
@@ -49,7 +49,7 @@ class NotificationManager {
     }
 
     public function getUnreadCount($user_id) {
-        $query = "SELECT COUNT(*) as count FROM " . $this->table_name . " 
+        $query = "SELECT COUNT(*) as count FROM " . $this->table_name . "
                   WHERE user_id = :user_id AND is_read = 0";
 
         $stmt = $this->conn->prepare($query);
@@ -61,8 +61,8 @@ class NotificationManager {
     }
 
     public function markAsRead($notification_id, $user_id) {
-        $query = "UPDATE " . $this->table_name . " 
-                  SET is_read = 1, read_at = NOW() 
+        $query = "UPDATE " . $this->table_name . "
+                  SET is_read = 1, read_at = NOW()
                   WHERE id = :id AND user_id = :user_id";
 
         $stmt = $this->conn->prepare($query);
@@ -78,8 +78,8 @@ class NotificationManager {
     }
 
     public function markAllAsRead($user_id) {
-        $query = "UPDATE " . $this->table_name . " 
-                  SET is_read = 1, read_at = NOW() 
+        $query = "UPDATE " . $this->table_name . "
+                  SET is_read = 1, read_at = NOW()
                   WHERE user_id = :user_id AND is_read = 0";
 
         $stmt = $this->conn->prepare($query);
@@ -256,5 +256,106 @@ class NotificationManager {
             return false;
         }
     }
+
+    // Chairperson Notifications
+    public function notifyChairpersonAcademicPeriod($semester, $school_year, $end_date, $is_expired = false) {
+        if ($is_expired) {
+            $title = "Academic Period Expired";
+            $message = "The academic period {$semester} Semester SY {$school_year} has expired. Please review submissions and applications.";
+            $type = 'warning';
+        } else {
+            $title = "Academic Period Opened";
+            $message = "New academic period is now open: {$semester} Semester SY {$school_year}. Deadline: " . date('M d, Y', strtotime($end_date));
+            $type = 'info';
+        }
+
+        // Notify all chairpersons
+        $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
+                  SELECT id, :title, :message, :type, 'system_update'
+                  FROM users WHERE role = 'chairperson' AND status = 'active'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":title", $title);
+        $stmt->bindParam(":message", $message);
+        $stmt->bindParam(":type", $type);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Chairperson academic period notification error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function notifyChairpersonNewAdviser($adviser_name, $department) {
+        $title = "New Adviser Registered";
+        $message = "A new adviser, {$adviser_name}, has registered in the {$department} department and requires section assignment.";
+        $type = 'info';
+
+        // Notify chairpersons in the same department
+        $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
+                  SELECT id, :title, :message, :type, 'adviser_management'
+                  FROM users WHERE role = 'chairperson' AND department = :department AND status = 'active'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":title", $title);
+        $stmt->bindParam(":message", $message);
+        $stmt->bindParam(":type", $type);
+        $stmt->bindParam(":department", $department);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Chairperson new adviser notification error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function notifyChairpersonApplicationReview($application_count, $department) {
+        $title = "Applications Pending Review";
+        $message = "There are {$application_count} honor applications pending review in the {$department} department.";
+        $type = 'warning';
+
+        // Notify chairpersons in the same department
+        $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
+                  SELECT id, :title, :message, :type, 'application_review'
+                  FROM users WHERE role = 'chairperson' AND department = :department AND status = 'active'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":title", $title);
+        $stmt->bindParam(":message", $message);
+        $stmt->bindParam(":type", $type);
+        $stmt->bindParam(":department", $department);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Chairperson application review notification error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function notifyChairpersonRankingGenerated($period_name, $department) {
+        $title = "Honor Rankings Generated";
+        $message = "Honor rankings have been generated for {$period_name} in the {$department} department. Please review and finalize.";
+        $type = 'success';
+
+        // Notify chairpersons in the same department
+        $query = "INSERT INTO " . $this->table_name . " (user_id, title, message, type, category)
+                  SELECT id, :title, :message, :type, 'ranking_finalization'
+                  FROM users WHERE role = 'chairperson' AND department = :department AND status = 'active'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":title", $title);
+        $stmt->bindParam(":message", $message);
+        $stmt->bindParam(":type", $type);
+        $stmt->bindParam(":department", $department);
+
+        try {
+            return $stmt->execute();
+        } catch (PDOException $e) {
+            error_log("Chairperson ranking generated notification error: " . $e->getMessage());
+            return false;
+        }
+    }
 }
-?>

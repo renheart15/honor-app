@@ -17,7 +17,15 @@ $department = $_SESSION['department'];
 $year_filter = $_GET['year'] ?? '1'; // Default to first year
 $section_filter = $_GET['section'] ?? 'all';
 $ranking_type_filter = $_GET['ranking_type'] ?? 'deans_list'; // Default to Dean's List
-$period_filter = $_GET['period'] ?? 'all';
+
+// Get latest academic period for default (based on academic year)
+$latest_period_query = "SELECT id FROM academic_periods ORDER BY school_year DESC LIMIT 1";
+$latest_period_stmt = $db->prepare($latest_period_query);
+$latest_period_stmt->execute();
+$latest_period = $latest_period_stmt->fetch(PDO::FETCH_ASSOC);
+$default_period = $latest_period ? $latest_period['id'] : 'all';
+
+$period_filter = $_GET['period'] ?? $default_period;
 
 // Get the academic period to use for GWA calculations
 $academic_period_id = null;
@@ -63,30 +71,18 @@ $student_filter = implode(' AND ', $filter_conditions);
 // Get comprehensive department statistics
 $stats = [];
 
-// Total students (filtered by honor eligibility based on ranking type and academic period)
-// Calculate GWA directly from grades table like rankings.php does
-if ($semester_string) {
-    $query = "SELECT COUNT(DISTINCT u.id) as count
-              FROM users u
-              JOIN grade_submissions gs ON gs.user_id = u.id
-              JOIN grades g ON g.submission_id = gs.id
-              WHERE " . $student_filter . "
-                AND u.role = 'student'
-                AND g.semester_taken = :semester_string
-                AND g.grade > 0.00
-                AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
-              GROUP BY u.id
-              HAVING (SUM(g.units * g.grade) / SUM(g.units)) <= 1.75";
-    $stmt = $db->prepare($query);
-    $stmt->bindValue(':semester_string', $semester_string);
-    foreach ($filter_params as $key => $value) {
-        $stmt->bindValue($key, $value);
-    }
-    $stmt->execute();
-    $stats['total_students'] = $stmt->rowCount();
-} else {
-    $stats['total_students'] = 0;
+// Total students in department (filtered by year level and section only)
+$query = "SELECT COUNT(*) as count
+          FROM users u
+          WHERE " . $student_filter . "
+            AND u.role = 'student'
+            AND u.status = 'active'";
+$stmt = $db->prepare($query);
+foreach ($filter_params as $key => $value) {
+    $stmt->bindValue($key, $value);
 }
+$stmt->execute();
+$stats['total_students'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Total advisers
 $query = "SELECT COUNT(*) as count FROM users WHERE role = 'adviser' AND department = :department AND status = 'active'";
@@ -96,14 +92,28 @@ $stmt->execute();
 $stats['total_advisers'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Honor applications statistics
-$app_conditions = $filter_conditions;
-// Always filter by ranking type (no 'all' option)
-if ($ranking_type_filter == 'deans_list') {
-    $app_conditions[] = "ha.application_type IN ('deans_list')";
-} elseif ($ranking_type_filter == 'latin_honors') {
-    $app_conditions[] = "ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')";
+// Filter applications based on user attributes (year_level, section, department)
+$app_user_conditions = ["u.department = :department", "u.status = 'active'"];
+$app_user_params = [':department' => $department];
+
+// Always filter by year level (no 'all' option)
+$app_user_conditions[] = "u.year_level = :year_level";
+$app_user_params[':year_level'] = $year_filter;
+
+if ($section_filter !== 'all') {
+    $app_user_conditions[] = "u.section = :section";
+    $app_user_params[':section'] = $section_filter;
 }
-$app_filter = implode(' AND ', $app_conditions);
+
+$app_user_filter = implode(' AND ', $app_user_conditions);
+
+// Always filter by ranking type (no 'all' option)
+$app_type_condition = "";
+if ($ranking_type_filter == 'deans_list') {
+    $app_type_condition = "AND ha.application_type IN ('deans_list')";
+} elseif ($ranking_type_filter == 'latin_honors') {
+    $app_type_condition = "AND ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')";
+}
 
 $query = "SELECT
             COUNT(*) as total_applications,
@@ -112,20 +122,14 @@ $query = "SELECT
             SUM(CASE WHEN ha.status IN ('submitted', 'approved') THEN 1 ELSE 0 END) as pending_applications
           FROM honor_applications ha
           JOIN users u ON ha.user_id = u.id
-          WHERE " . $app_filter;
+          WHERE " . $app_user_filter . " " . $app_type_condition;
 $stmt = $db->prepare($query);
-foreach ($filter_params as $key => $value) {
+foreach ($app_user_params as $key => $value) {
     $stmt->bindValue($key, $value);
 }
 $stmt->execute();
 $app_stats = $stmt->fetch(PDO::FETCH_ASSOC);
 $stats = array_merge($stats, $app_stats);
-
-// Calculate Total Disapproved and Total Approved based on Honor Eligible Students
-// Total Disapproved = Total Applications - Honor Eligible Students
-$stats['disapproved_applications'] = max(0, ($stats['total_applications'] ?? 0) - ($stats['total_students'] ?? 0));
-// Total Approved = Total Applications - Total Disapproved
-$stats['approved_applications'] = max(0, ($stats['total_applications'] ?? 0) - ($stats['disapproved_applications'] ?? 0));
 
 // GWA distribution (filtered by ranking type and academic period)
 // Calculate GWA directly from grades table like rankings.php does
@@ -199,42 +203,24 @@ if ($semester_string) {
     $gwa_distribution = [];
 }
 
-// Year level performance (filtered by ranking type and academic period)
-// Calculate GWA directly from grades table like rankings.php does
-if ($semester_string) {
-    $query = "SELECT year_level,
-                     COUNT(DISTINCT user_id) as student_count,
-                     AVG(calculated_gwa) as avg_gwa,
-                     MIN(calculated_gwa) as best_gwa,
-                     COUNT(DISTINCT CASE WHEN calculated_gwa <= 1.75 THEN user_id END) as honor_eligible
-              FROM (
-                SELECT u.id as user_id,
-                       u.year_level,
-                       SUM(g.units * g.grade) / SUM(g.units) as calculated_gwa
-                FROM users u
-                JOIN grade_submissions gs ON gs.user_id = u.id
-                JOIN grades g ON g.submission_id = gs.id
-                WHERE " . $student_filter . "
-                  AND u.role = 'student'
-                  AND g.semester_taken = :semester_string
-                  AND g.grade > 0.00
-                  AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
-                GROUP BY u.id, u.year_level
-              ) as gwa_data
-              GROUP BY year_level
-              ORDER BY year_level";
-    $stmt = $db->prepare($query);
-    $stmt->bindValue(':semester_string', $semester_string);
-    foreach ($filter_params as $key => $value) {
-        $stmt->bindValue($key, $value);
-    }
-    $stmt->execute();
-    $year_performance = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} else {
-    $year_performance = [];
+// Year level performance removed
+$year_performance = [];
+
+// Monthly application trends (last 12 months) - filtered by ranking type, year, and section
+$app_trends_conditions = ["u.department = :department", "u.status = 'active'"];
+$app_trends_params = [':department' => $department];
+
+// Always filter by year level (no 'all' option)
+$app_trends_conditions[] = "u.year_level = :year_level";
+$app_trends_params[':year_level'] = $year_filter;
+
+if ($section_filter !== 'all') {
+    $app_trends_conditions[] = "u.section = :section";
+    $app_trends_params[':section'] = $section_filter;
 }
 
-// Monthly application trends (last 12 months) - filtered by ranking type
+$app_trends_filter = implode(' AND ', $app_trends_conditions);
+
 if ($ranking_type_filter == 'deans_list') {
     $query = "SELECT
                 DATE_FORMAT(ha.submitted_at, '%Y-%m') as month,
@@ -242,7 +228,7 @@ if ($ranking_type_filter == 'deans_list') {
                 COUNT(CASE WHEN ha.status = 'final_approved' THEN 1 END) as approved_count
               FROM honor_applications ha
               JOIN users u ON ha.user_id = u.id
-              WHERE u.department = :department
+              WHERE " . $app_trends_filter . "
                 AND ha.application_type = 'deans_list'
                 AND ha.submitted_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
               GROUP BY DATE_FORMAT(ha.submitted_at, '%Y-%m')
@@ -254,14 +240,16 @@ if ($ranking_type_filter == 'deans_list') {
                 COUNT(CASE WHEN ha.status = 'final_approved' THEN 1 END) as approved_count
               FROM honor_applications ha
               JOIN users u ON ha.user_id = u.id
-              WHERE u.department = :department
+              WHERE " . $app_trends_filter . "
                 AND ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')
                 AND ha.submitted_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
               GROUP BY DATE_FORMAT(ha.submitted_at, '%Y-%m')
               ORDER BY month";
 }
 $stmt = $db->prepare($query);
-$stmt->bindParam(':department', $department);
+foreach ($app_trends_params as $key => $value) {
+    $stmt->bindValue($key, $value);
+}
 $stmt->execute();
 $monthly_trends = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -289,10 +277,16 @@ if ($semester_string) {
                   ORDER BY gwa ASC
                   LIMIT 10";
     } else {
+        // Latin Honors - apply full qualification checks
         $query = "SELECT u.first_name, u.last_name, u.student_id, u.section, u.year_level,
                          SUM(g.units * g.grade) / SUM(g.units) as gwa,
                          COUNT(DISTINCT ha.id) as application_count,
-                         COUNT(DISTINCT CASE WHEN ha.status = 'final_approved' THEN ha.id END) as approved_count
+                         COUNT(DISTINCT CASE WHEN ha.status = 'final_approved' THEN ha.id END) as approved_count,
+                         -- Additional qualification checks
+                         CASE WHEN u.year_level = 4 THEN 1 ELSE 0 END as is_4th_year,
+                         COUNT(DISTINCT CASE WHEN g.semester_taken LIKE '%1st Semester%' OR g.semester_taken LIKE '%2nd Semester%' THEN 1 END) as total_semesters,
+                         MAX(CASE WHEN g.grade > 2.5 THEN 1 ELSE 0 END) as has_grade_above_25,
+                         MAX(CASE WHEN g.grade = 0.00 THEN 1 ELSE 0 END) as has_ongoing_grades
                   FROM users u
                   JOIN grade_submissions gs ON gs.user_id = u.id
                   JOIN grades g ON g.submission_id = gs.id
@@ -306,6 +300,10 @@ if ($semester_string) {
                     AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
                   GROUP BY u.id, u.first_name, u.last_name, u.student_id, u.section, u.year_level
                   HAVING gwa IS NOT NULL AND gwa <= 1.75
+                    AND is_4th_year = 1
+                    AND total_semesters >= 8
+                    AND has_grade_above_25 = 0
+                    AND has_ongoing_grades = 0
                   ORDER BY gwa ASC
                   LIMIT 10";
     }
@@ -329,21 +327,8 @@ if ($semester_string) {
     $top_students = [];
 }
 
-// Adviser performance
-$query = "SELECT u.first_name, u.last_name,
-                 COUNT(DISTINCT gs.id) as processed_submissions,
-                 COUNT(DISTINCT ha.id) as reviewed_applications,
-                 AVG(DATEDIFF(gs.processed_at, gs.upload_date)) as avg_processing_days
-          FROM users u
-          LEFT JOIN grade_submissions gs ON u.id = gs.processed_by
-          LEFT JOIN honor_applications ha ON u.id = ha.reviewed_by
-          WHERE u.role = 'adviser' AND u.department = :department AND u.status = 'active'
-          GROUP BY u.id, u.first_name, u.last_name
-          ORDER BY processed_submissions DESC, reviewed_applications DESC";
-$stmt = $db->prepare($query);
-$stmt->bindParam(':department', $department);
-$stmt->execute();
-$adviser_performance = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Adviser performance removed
+$adviser_performance = [];
 
 // Get available year levels and sections for filters
 $year_query = "SELECT DISTINCT year_level FROM users WHERE department = :department AND role = 'student' ORDER BY year_level";
@@ -492,9 +477,7 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                                 </button>
                             </div>
                         </div>
-                    </div>
 
-                    <div class="flex items-center space-x-4">
                         <?php include 'includes/header.php'; ?>
                     </div>
                 </div>
@@ -553,9 +536,7 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <div>
                                         <label class="block text-sm font-medium text-gray-700 mb-2">Academic Period</label>
                                         <select id="period_filter" onchange="applyFilters()"
-                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
-                                            <option value="all" <?php echo $period_filter === 'all' ? 'selected' : ''; ?>>Current Period</option>
-                                            <?php foreach ($available_periods as $period): ?>
+                                                class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">                                            <?php foreach ($available_periods as $period): ?>
                                                 <option value="<?php echo $period['id']; ?>" <?php echo $period_filter == $period['id'] ? 'selected' : ''; ?>>
                                                     <?php echo $period['semester']; ?> Sem SY <?php echo $period['school_year']; ?>
                                                 </option>
@@ -584,7 +565,7 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                                     <i data-lucide="users" class="w-6 h-6 text-blue-600"></i>
                                 </div>
                                 <div class="ml-4">
-                                    <p class="text-sm font-medium text-gray-500 whitespace-nowrap">Honor Eligible Students</p>
+                                    <p class="text-sm font-medium text-gray-500 whitespace-nowrap">Number of Students</p>
                                     <p class="text-2xl font-bold text-gray-900"><?php echo $stats['total_students']; ?></p>
                                 </div>
                             </div>
@@ -627,114 +608,62 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                         </div>
                     </div>
 
-                    <!-- Year Level Performance -->
-                    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 mb-8">
+
+
+                    <!-- Top Students Ranking -->
+                    <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
                         <div class="p-6 border-b border-gray-200">
                             <h3 class="text-lg font-semibold text-gray-900 flex items-center">
-                                <i data-lucide="bar-chart-3" class="w-5 h-5 text-blue-600 mr-2"></i>
-                                Year Level Performance
+                                <i data-lucide="star" class="w-5 h-5 text-yellow-600 mr-2"></i>
+                                Top Performing Students
                             </h3>
+                            <p class="text-sm text-gray-500 mt-1">
+                                <?php if ($ranking_type_filter == 'deans_list'): ?>
+                                    Students ranked by GWA (≤ 1.75) for Dean's List eligibility
+                                <?php else: ?>
+                                    Students with approved Latin Honors applications
+                                <?php endif; ?>
+                            </p>
                         </div>
                         <div class="p-6">
-                            <?php if (empty($year_performance)): ?>
+                            <?php if (empty($top_students)): ?>
                                 <div class="text-center py-8">
-                                    <i data-lucide="graduation-cap" class="w-12 h-12 text-gray-300 mx-auto mb-3"></i>
-                                    <p class="text-gray-500">No year level data available yet</p>
+                                    <i data-lucide="users" class="w-12 h-12 text-gray-300 mx-auto mb-3"></i>
+                                    <p class="text-gray-500">No student data available yet</p>
                                 </div>
                             <?php else: ?>
-                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                                    <?php foreach ($year_performance as $year): ?>
-                                        <div class="bg-gray-50 rounded-xl p-6 text-center">
-                                            <h4 class="text-2xl font-bold text-primary-600 mb-2">Year <?php echo $year['year_level']; ?></h4>
-                                            <div class="space-y-2">
-                                                <div>
-                                                    <div class="text-lg font-bold text-gray-900"><?php echo $year['student_count']; ?></div>
-                                                    <div class="text-xs text-gray-500">Students</div>
+                                <div class="space-y-4">
+                                    <?php foreach (array_slice($top_students, 0, 10) as $index => $student): ?>
+                                        <div class="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                                            <div class="flex items-center">
+                                                <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold <?php echo $index === 0 ? 'bg-yellow-100 text-yellow-800' : ($index === 1 ? 'bg-gray-100 text-gray-800' : ($index === 2 ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800')); ?>">
+                                                    #<?php echo $index + 1; ?>
                                                 </div>
-                                                <div>
-                                                    <div class="text-lg font-bold text-green-600"><?php echo $year['honor_eligible']; ?></div>
-                                                    <div class="text-xs text-gray-500">Honor Eligible</div>
+                                                <div class="ml-3">
+                                                    <h4 class="font-semibold text-gray-900"><?php echo htmlspecialchars($student['first_name'] . ' ' . $student['last_name']); ?></h4>
+                                                    <p class="text-sm text-gray-500"><?php echo htmlspecialchars($student['student_id'] . ' • Year ' . $student['year_level'] . ' • ' . formatSectionDisplay($student['section'])); ?></p>
                                                 </div>
+                                            </div>
+                                            <div class="text-right">
+                                                <?php if ($ranking_type_filter == 'deans_list'): ?>
+                                                    <div class="text-lg font-bold text-primary-600"><?php echo formatGWA($student['gwa']); ?> GWA</div>
+                                                    <div class="text-xs text-gray-500">Dean's List</div>
+                                                <?php else: ?>
+                                                    <div class="text-lg font-bold text-yellow-600">
+                                                        <?php
+                                                        // Determine Latin Honor type based on GWA
+                                                        if ($student['gwa'] <= 1.00) echo 'Summa Cum Laude';
+                                                        elseif ($student['gwa'] <= 1.45) echo 'Magna Cum Laude';
+                                                        elseif ($student['gwa'] <= 1.75) echo 'Cum Laude';
+                                                        ?>
+                                                    </div>
+                                                    <div class="text-xs text-gray-500"><?php echo formatGWA($student['gwa']); ?> GWA</div>
+                                                <?php endif; ?>
                                             </div>
                                         </div>
                                     <?php endforeach; ?>
                                 </div>
                             <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                        <!-- Top Students -->
-                        <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
-                            <div class="p-6 border-b border-gray-200">
-                                <h3 class="text-lg font-semibold text-gray-900 flex items-center">
-                                    <i data-lucide="star" class="w-5 h-5 text-yellow-600 mr-2"></i>
-                                    Ranking
-                                </h3>
-                            </div>
-                            <div class="p-6">
-                                <?php if (empty($top_students)): ?>
-                                    <div class="text-center py-8">
-                                        <i data-lucide="users" class="w-12 h-12 text-gray-300 mx-auto mb-3"></i>
-                                        <p class="text-gray-500">No student data available yet</p>
-                                    </div>
-                                <?php else: ?>
-                                    <div class="space-y-4">
-                                        <?php foreach (array_slice($top_students, 0, 5) as $index => $student): ?>
-                                            <div class="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
-                                                <div class="flex items-center">
-                                                    <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold <?php echo $index === 0 ? 'bg-yellow-100 text-yellow-800' : ($index === 1 ? 'bg-gray-100 text-gray-800' : ($index === 2 ? 'bg-orange-100 text-orange-800' : 'bg-blue-100 text-blue-800')); ?>">
-                                                        #<?php echo $index + 1; ?>
-                                                    </div>
-                                                    <div class="ml-3">
-                                                        <h4 class="font-semibold text-gray-900"><?php echo htmlspecialchars($student['first_name'] . ' ' . $student['last_name']); ?></h4>
-                                                        <p class="text-sm text-gray-500"><?php echo htmlspecialchars($student['student_id'] . ' • ' . formatSectionDisplay($student['section'])); ?></p>
-                                                    </div>
-                                                </div>
-                                                <div class="text-right">
-                                                    <div class="text-lg font-bold text-primary-600"><?php echo formatGWA($student['gwa']); ?></div>
-                                                </div>
-                                            </div>
-                                        <?php endforeach; ?>
-                                    </div>
-                                <?php endif; ?>
-                            </div>
-                        </div>
-
-                        <!-- Adviser Performance -->
-                        <div class="bg-white rounded-2xl shadow-sm border border-gray-200">
-                            <div class="p-6 border-b border-gray-200">
-                                <h3 class="text-lg font-semibold text-gray-900 flex items-center">
-                                    <i data-lucide="user-check" class="w-5 h-5 text-green-600 mr-2"></i>
-                                    Adviser Performance
-                                </h3>
-                            </div>
-                            <div class="p-6">
-                                <?php if (empty($adviser_performance)): ?>
-                                    <div class="text-center py-8">
-                                        <i data-lucide="user-check" class="w-12 h-12 text-gray-300 mx-auto mb-3"></i>
-                                        <p class="text-gray-500">No adviser data available yet</p>
-                                    </div>
-                                <?php else: ?>
-                                    <div class="space-y-4">
-                                        <?php foreach ($adviser_performance as $adviser): ?>
-                                            <div class="p-3 bg-gray-50 rounded-xl">
-                                                <h4 class="font-semibold text-gray-900"><?php echo htmlspecialchars($adviser['first_name'] . ' ' . $adviser['last_name']); ?></h4>
-                                                <div class="grid grid-cols-3 gap-4 mt-2 text-sm">
-                                                    <div>
-                                                        <div class="font-bold text-blue-600"><?php echo $adviser['processed_submissions']; ?></div>
-                                                        <div class="text-gray-500">Submissions</div>
-                                                    </div>
-                                                    <div>
-                                                        <div class="font-bold text-purple-600"><?php echo $adviser['reviewed_applications']; ?></div>
-                                                        <div class="text-gray-500">Applications</div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        <?php endforeach; ?>
-                                    </div>
-                                <?php endif; ?>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -1028,7 +957,8 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
             url.searchParams.delete('section');
             // Keep ranking type with default value (Dean's List)
             url.searchParams.set('ranking_type', 'deans_list');
-            url.searchParams.delete('period');
+            // Keep period filter with default value (latest period)
+            url.searchParams.set('period', '<?php echo $default_period; ?>');
             window.location.href = url.toString();
         }
     </script>

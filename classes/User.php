@@ -113,11 +113,35 @@ class User {
     }
 
     public function updateProfile($id, $data) {
-        $query = "UPDATE " . $this->table_name . " 
-                  SET first_name=:first_name, last_name=:last_name, middle_name=:middle_name,
-                      department=:department, year_level=:year_level, section=:section,
-                      contact_number=:contact_number, address=:address, updated_at=NOW()
-                  WHERE id=:id";
+        // Build dynamic query based on available fields
+        $set_parts = [];
+        $params = [];
+
+        // Always update these core fields
+        $set_parts[] = "first_name=:first_name";
+        $set_parts[] = "last_name=:last_name";
+        $set_parts[] = "middle_name=:middle_name";
+        $set_parts[] = "year_level=:year_level";
+        $set_parts[] = "section=:section";
+        $set_parts[] = "contact_number=:contact_number";
+        $set_parts[] = "address=:address";
+
+        // Only update department if provided
+        if (isset($data['department'])) {
+            $set_parts[] = "department=:department";
+        }
+
+        // Add email and student_id if provided
+        if (isset($data['email'])) {
+            $set_parts[] = "email=:email";
+        }
+        if (isset($data['student_id'])) {
+            $set_parts[] = "student_id=:student_id";
+        }
+
+        $set_parts[] = "updated_at=NOW()";
+
+        $query = "UPDATE " . $this->table_name . " SET " . implode(", ", $set_parts) . " WHERE id=:id";
 
         $stmt = $this->conn->prepare($query);
 
@@ -125,7 +149,6 @@ class User {
         $first_name = htmlspecialchars(strip_tags($data['first_name']));
         $last_name = htmlspecialchars(strip_tags($data['last_name']));
         $middle_name = htmlspecialchars(strip_tags($data['middle_name'] ?? ''));
-        $department = htmlspecialchars(strip_tags($data['department']));
         $year_level = $data['year_level'] ? (int)$data['year_level'] : null;
         $section = htmlspecialchars(strip_tags($data['section']));
         $contact_number = htmlspecialchars(strip_tags($data['contact_number'] ?? ''));
@@ -135,11 +158,25 @@ class User {
         $stmt->bindParam(":first_name", $first_name);
         $stmt->bindParam(":last_name", $last_name);
         $stmt->bindParam(":middle_name", $middle_name);
-        $stmt->bindParam(":department", $department);
         $stmt->bindParam(":year_level", $year_level);
         $stmt->bindParam(":section", $section);
         $stmt->bindParam(":contact_number", $contact_number);
         $stmt->bindParam(":address", $address);
+
+        // Bind optional fields only if present
+        if (isset($data['department'])) {
+            $department = htmlspecialchars(strip_tags($data['department']));
+            $stmt->bindParam(":department", $department);
+        }
+        if (isset($data['email'])) {
+            $email = htmlspecialchars(strip_tags($data['email']));
+            $stmt->bindParam(":email", $email);
+        }
+        if (isset($data['student_id'])) {
+            $student_id = htmlspecialchars(strip_tags($data['student_id']));
+            $stmt->bindParam(":student_id", $student_id);
+        }
+
         $stmt->bindParam(":id", $id);
 
         try {

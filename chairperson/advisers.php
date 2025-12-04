@@ -20,7 +20,7 @@ $message_type = '';
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $action = $_POST['action'] ?? '';
     $adviser_id = $_POST['adviser_id'] ?? 0;
-    
+
     if ($action === 'activate') {
         $query = "UPDATE users SET status = 'active' WHERE id = :adviser_id AND role = 'adviser' AND department = :department";
         $stmt = $db->prepare($query);
@@ -353,21 +353,14 @@ if ($filter !== 'all') {
                             <p class="text-sm text-gray-500">Manage advisers in <?php echo $department; ?> department</p>
                         </div>
                     </div>
-                    
+
                     <div class="flex items-center space-x-4">
-                        <select onchange="filterAdvisers(this.value)" 
+                        <select onchange="filterAdvisers(this.value)"
                                 class="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
                             <option value="all" <?php echo $filter === 'all' ? 'selected' : ''; ?>>All Advisers</option>
                             <option value="active" <?php echo $filter === 'active' ? 'selected' : ''; ?>>Active</option>
                             <option value="inactive" <?php echo $filter === 'inactive' ? 'selected' : ''; ?>>Inactive</option>
                         </select>
-                        <button onclick="addAdviser()" class="bg-primary-600 hover:bg-primary-700 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors">
-                            <i data-lucide="plus" class="w-4 h-4 inline mr-2"></i>
-                            Add Adviser
-                        </button>
-                    </div>
-
-                    <div class="flex items-center space-x-4">
                         <?php include 'includes/header.php'; ?>
                     </div>
                 </div>
@@ -421,7 +414,6 @@ if ($filter !== 'all') {
                                                         </div>
                                                         <div class="ml-4">
                                                             <div class="text-sm font-medium text-gray-900"><?php echo htmlspecialchars($adviser['first_name'] . ' ' . $adviser['last_name']); ?></div>
-                                                            <div class="text-sm text-gray-500"><?php echo htmlspecialchars($adviser['email']); ?></div>
                                                         </div>
                                                     </div>
                                                 </td>
@@ -504,10 +496,12 @@ if ($filter !== 'all') {
 
     <script>
         lucide.createIcons();
-        
+
         function filterAdvisers(filter) {
             window.location.href = 'advisers.php?filter=' + filter;
         }
+
+
 
         function manageAdviser(adviserId, action) {
             let actionText = '';
@@ -540,10 +534,7 @@ if ($filter !== 'all') {
             }
         }
 
-        function addAdviser() {
-            // Implement add adviser functionality
-            alert('Add adviser functionality will be implemented');
-        }
+
 
         function showAssignSection(adviserId) {
             const modal = document.getElementById('assignSectionModal');
@@ -637,20 +628,14 @@ if ($filter !== 'all') {
                     <label for="assignSection" class="block text-sm font-medium text-gray-700 mb-1">Section</label>
                     <select id="assignSection" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500">
                         <option value="">Select Section</option>
+                        <option value="TAB">TAB</option>
                         <?php
-                        // Get unique section letters only (remove duplicates)
-                        $unique_sections = [];
-                        foreach ($available_sections as $section) {
-                            if (!in_array($section['section'], $unique_sections)) {
-                                $unique_sections[] = $section['section'];
-                            }
-                        }
-                        sort($unique_sections); // Sort alphabetically
-                        foreach ($unique_sections as $section_letter): ?>
-                            <option value="<?php echo htmlspecialchars($section_letter); ?>">
-                                <?php echo htmlspecialchars(formatSectionDisplay($section_letter)); ?>
-                            </option>
-                        <?php endforeach; ?>
+                        // Add letters A-Z
+                        for ($i = 65; $i <= 90; $i++): // ASCII A-Z
+                            $letter = chr($i);
+                        ?>
+                            <option value="<?php echo $letter; ?>"><?php echo $letter; ?></option>
+                        <?php endfor; ?>
                     </select>
                 </div>
 
@@ -686,5 +671,7 @@ if ($filter !== 'all') {
             <input type="hidden" id="assignAdviserId" value="">
         </div>
     </div>
+
+
 </body>
 </html>

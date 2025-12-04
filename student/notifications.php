@@ -109,18 +109,9 @@ $unread_count = $notificationManager->getUnreadCount($user_id);
                         <i data-lucide="file-bar-chart" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
-                    <a href="notifications.php" class="bg-primary-50 border-r-2 border-primary-600 text-primary-700 group flex items-center px-2 py-2 text-sm font-medium rounded-l-xl">
-                        <i data-lucide="bell" class="text-primary-500 mr-3 h-5 w-5"></i>
-                        Notifications
-                        <?php if ($unread_count > 0): ?>
-                            <span class="ml-auto bg-primary-600 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                                <?php echo $unread_count; ?>
-                            </span>
-                        <?php endif; ?>
-                    </a>
-                    <a href="profile.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                    <a href="settings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Profile
+                        Settings
                     </a>
                 </nav>
 

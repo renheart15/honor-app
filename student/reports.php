@@ -17,7 +17,15 @@ $department = $_SESSION['department'];
 $year_filter = $_GET['year'] ?? '1'; // Default to first year
 $section_filter = $_GET['section'] ?? 'all';
 $ranking_type_filter = $_GET['ranking_type'] ?? 'deans_list'; // Default to Dean's List
-$period_filter = $_GET['period'] ?? 'all';
+
+// Get latest academic period for default (based on academic year)
+$latest_period_query = "SELECT id FROM academic_periods ORDER BY school_year DESC LIMIT 1";
+$latest_period_stmt = $db->prepare($latest_period_query);
+$latest_period_stmt->execute();
+$latest_period = $latest_period_stmt->fetch(PDO::FETCH_ASSOC);
+$default_period = $latest_period ? $latest_period['id'] : 'all';
+
+$period_filter = $_GET['period'] ?? $default_period;
 
 // Get the academic period to use for GWA calculations
 $academic_period_id = null;
@@ -439,9 +447,9 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                         <i data-lucide="file-bar-chart" class="text-primary-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
-                    <a href="profile.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                    <a href="settings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Profile
+                        Settings
                     </a>
                 </nav>
 

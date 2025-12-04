@@ -446,6 +446,17 @@ $section->addText(
     ['size' => 11, 'name' => 'Arial'],
     ['alignment' => Jc::START, 'spaceAfter' => 0]
 );
+$section->addTextBreak(3);
+$section->addText(
+    '_________________________________',
+    ['size' => 11, 'name' => 'Arial'],
+    ['alignment' => Jc::START, 'spaceAfter' => 0]
+);
+$section->addText(
+    'Dean of Technology',
+    ['size' => 11, 'name' => 'Arial'],
+    ['alignment' => Jc::START, 'spaceAfter' => 0]
+);
 
 
 // Generate filename

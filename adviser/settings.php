@@ -3,14 +3,14 @@ require_once '../config/config.php';
 
 requireLogin();
 
-if (!hasRole('chairperson')) {
+if (!hasRole('adviser')) {
     redirect('../login.php');
 }
 
 $database = new Database();
 $db = $database->getConnection();
 
-$chairperson_id = $_SESSION['user_id'];
+$adviser_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
 
 $message = '';
@@ -31,7 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $stmt->bindParam(':first_name', $first_name);
             $stmt->bindParam(':last_name', $last_name);
             $stmt->bindParam(':email', $email);
-            $stmt->bindParam(':user_id', $chairperson_id);
+            $stmt->bindParam(':user_id', $adviser_id);
             
             if ($stmt->execute()) {
                 $_SESSION['first_name'] = $first_name;
@@ -62,7 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             // Verify current password
             $query = "SELECT password FROM users WHERE id = :user_id";
             $stmt = $db->prepare($query);
-            $stmt->bindParam(':user_id', $chairperson_id);
+            $stmt->bindParam(':user_id', $adviser_id);
             $stmt->execute();
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
             
@@ -71,7 +71,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $query = "UPDATE users SET password = :password WHERE id = :user_id";
                 $stmt = $db->prepare($query);
                 $stmt->bindParam(':password', $hashed_password);
-                $stmt->bindParam(':user_id', $chairperson_id);
+                $stmt->bindParam(':user_id', $adviser_id);
                 
                 if ($stmt->execute()) {
                     $message = 'Password changed successfully!';
@@ -91,7 +91,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 // Get current user data
 $query = "SELECT * FROM users WHERE id = :user_id";
 $stmt = $db->prepare($query);
-$stmt->bindParam(':user_id', $chairperson_id);
+$stmt->bindParam(':user_id', $adviser_id);
 $stmt->execute();
 $user_data = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -152,7 +152,7 @@ $system_stats = $stmt->fetch(PDO::FETCH_ASSOC);
                         </div>
                         <div class="ml-3">
                             <p class="text-sm font-semibold text-gray-900"><?php echo $_SESSION['first_name'] . ' ' . $_SESSION['last_name']; ?></p>
-                            <p class="text-xs text-gray-500">Chairperson</p>
+                            <p class="text-xs text-gray-500">adviser</p>
                         </div>
                     </div>
                 </div>
@@ -267,7 +267,7 @@ $system_stats = $stmt->fetch(PDO::FETCH_ASSOC);
                                             </div>
                                             <div>
                                                 <label class="block text-sm font-semibold text-gray-700 mb-2">Role</label>
-                                                <input type="text" value="Chairperson" disabled
+                                                <input type="text" value="adviser" disabled
                                                        class="block w-full px-3 py-3 border border-gray-300 rounded-xl bg-gray-50 text-gray-500">
                                             </div>
                                         </div>

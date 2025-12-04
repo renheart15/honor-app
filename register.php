@@ -24,7 +24,7 @@
         $db = $database->getConnection();
         $auth = new Auth($db);
 
-        $role = $_POST['role'] ?? 'student';
+        $role = $_POST['role'] ?? 'student'; // Get role from form submission
 
         $data = [
             'email'       => $_POST['email'] ?? '',
@@ -329,22 +329,22 @@
                         <?php endif; ?>
                     </div>
 
-                    <!-- Role -->
+                    <!-- Role Selection -->
                     <div>
-                        <label for="role" class="block text-sm font-semibold text-gray-700 mb-2">Role</label>
-                        <select id="role" name="role" onchange="toggleStudentFields()" 
+                        <label for="role" class="block text-sm font-semibold text-gray-700 mb-2">Role *</label>
+                        <select id="role" name="role" onchange="toggleRoleFields()" required
                                 class="block w-full px-3 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-ctu-500 focus:border-ctu-500 transition-colors">
-                            <option value="student" <?php echo $role === 'student' ? 'selected' : ''; ?>>Student</option>
-                            <option value="adviser" <?php echo $role === 'adviser' ? 'selected' : ''; ?>>Adviser</option>
-                            <option value="chairperson" <?php echo $role === 'chairperson' ? 'selected' : ''; ?>>Chairperson</option>
+                            <option value="student" <?php echo ($_POST['role'] ?? 'student') === 'student' ? 'selected' : ''; ?>>Student</option>
+                            <option value="adviser" <?php echo ($_POST['role'] ?? 'student') === 'adviser' ? 'selected' : ''; ?>>Adviser</option>
+                            <option value="chairperson" <?php echo ($_POST['role'] ?? 'student') === 'chairperson' ? 'selected' : ''; ?>>Chairperson</option>
                         </select>
                     </div>
 
-                    <!-- Student-specific fields -->
-                    <div id="studentFields" style="display: <?php echo $role === 'student' ? 'block' : 'none'; ?>;">
-                        <div class="mb-4">
-                            <label for="student_id" class="block text-sm font-semibold text-gray-700 mb-2">Student ID</label>
-                            <input type="text" id="student_id" name="student_id"
+                    <!-- Student Information -->
+                    <div class="space-y-4">
+                        <div>
+                            <label for="student_id" class="block text-sm font-semibold text-gray-700 mb-2">Student ID *</label>
+                            <input type="text" id="student_id" name="student_id" required
                                 class="block w-full px-3 py-3 border <?php echo isset($errors['student_id']) ? 'border-red-300 bg-red-50' : 'border-gray-300'; ?> rounded-xl focus:ring-2 focus:ring-ctu-500 focus:border-ctu-500 transition-colors"
                                 placeholder="Enter your student ID"
                                 value="<?php echo htmlspecialchars($_POST['student_id'] ?? ''); ?>">
@@ -355,8 +355,8 @@
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                                <label for="year_level" class="block text-sm font-semibold text-gray-700 mb-2">Year Level</label>
-                                <select id="year_level" name="year_level"
+                                <label for="year_level" class="block text-sm font-semibold text-gray-700 mb-2">Year Level *</label>
+                                <select id="year_level" name="year_level" required
                                         class="block w-full px-3 py-3 border <?php echo isset($errors['year_level']) ? 'border-red-300 bg-red-50' : 'border-gray-300'; ?> rounded-xl focus:ring-2 focus:ring-ctu-500 focus:border-ctu-500 transition-colors">
                                     <option value="">Select Year</option>
                                     <option value="1" <?php echo ($_POST['year_level'] ?? '') === '1' ? 'selected' : ''; ?>>1st Year</option>
@@ -380,17 +380,6 @@
                                 <?php endif; ?>
                                 <p class="mt-1 text-sm text-gray-500">Enter a letter (TAB, A, B, C, etc.)</p>
                             </div>
-                        </div>
-                    </div>
-
-                    <!-- Adviser Information -->
-                    <div id="adviserFields" style="display: <?php echo $role === 'adviser' ? 'block' : 'none'; ?>;">
-                        <div class="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                            <div class="flex items-center mb-2">
-                                <i data-lucide="info" class="w-4 h-4 text-blue-600 mr-2"></i>
-                                <span class="text-sm font-medium text-blue-800">Section Assignment</span>
-                            </div>
-                            <p class="text-sm text-blue-700">Your section assignment will be made by the department chairperson after registration. You'll be notified once assigned.</p>
                         </div>
                     </div>
 
@@ -586,79 +575,27 @@
                 }
             }
 
-            function toggleStudentFields() {
-                const roleSelect = document.getElementById("role").value;
-                document.getElementById("studentFields").style.display =
-                    roleSelect === "student" ? "block" : "none";
-                document.getElementById("adviserFields").style.display =
-                    roleSelect === "adviser" ? "block" : "none";
-            }
+            function toggleRoleFields() {
+                const roleSelect = document.getElementById('role');
+                const studentFields = document.querySelector('.space-y-4'); // The student information section
+                const studentIdInput = document.getElementById('student_id');
+                const yearLevelSelect = document.getElementById('year_level');
+                const sectionInput = document.getElementById('section');
 
-            // Run on page load (preserve selections after validation errors)
-            document.addEventListener("DOMContentLoaded", () => {
-                updateCourses();
-                updateMajors();
-                toggleStudentFields();
-            });
+                const selectedRole = roleSelect.value;
 
-            function updateCourses() {
-                const collegeSelect = document.getElementById('college');
-                const courseSelect = document.getElementById('course');
-                const majorDiv = document.getElementById('majorDiv');
-                const majorSelect = document.getElementById('major');
-                const departmentField = document.getElementById('department');
-
-                // Clear existing options
-                courseSelect.innerHTML = '<option value="">Select Course</option>';
-                majorSelect.innerHTML = '<option value="">Select Major</option>';
-                majorDiv.style.display = 'none';
-
-                const selectedCollege = collegeSelect.value;
-
-                if (selectedCollege && academicPrograms[selectedCollege]) {
-                    // Populate courses
-                    Object.keys(academicPrograms[selectedCollege]).forEach(course => {
-                        const option = document.createElement('option');
-                        option.value = course;
-                        option.textContent = course;
-                        courseSelect.appendChild(option);
-                    });
-
-                    // Update department field for backward compatibility
-                    departmentField.value = selectedCollege;
-                }
-            }
-
-            function updateMajors() {
-                const collegeSelect = document.getElementById('college');
-                const courseSelect = document.getElementById('course');
-                const majorDiv = document.getElementById('majorDiv');
-                const majorSelect = document.getElementById('major');
-                const departmentField = document.getElementById('department');
-
-                // Clear existing majors
-                majorSelect.innerHTML = '<option value="">Select Major</option>';
-                majorDiv.style.display = 'none';
-
-                const selectedCollege = collegeSelect.value;
-                const selectedCourse = courseSelect.value;
-
-                if (selectedCollege && selectedCourse && academicPrograms[selectedCollege][selectedCourse]) {
-                    const majors = academicPrograms[selectedCollege][selectedCourse].majors;
-
-                    if (majors && majors.length > 0) {
-                        // Show major dropdown if majors are available
-                        majorDiv.style.display = 'block';
-                        majors.forEach(major => {
-                            const option = document.createElement('option');
-                            option.value = major;
-                            option.textContent = major;
-                            majorSelect.appendChild(option);
-                        });
-                    }
-
-                    // Update department field (use course as department for more specificity)
-                    departmentField.value = selectedCourse;
+                if (selectedRole === 'student') {
+                    studentFields.style.display = 'block';
+                    studentIdInput.required = true;
+                    yearLevelSelect.required = true;
+                } else {
+                    studentFields.style.display = 'none';
+                    studentIdInput.required = false;
+                    yearLevelSelect.required = false;
+                    // Clear the fields when switching away from student role
+                    studentIdInput.value = '';
+                    yearLevelSelect.value = '';
+                    sectionInput.value = '';
                 }
             }
 
@@ -677,6 +614,8 @@
             // Initialize form on page load
             document.addEventListener('DOMContentLoaded', function() {
                 setupSectionInput();
+                toggleRoleFields(); // Initialize role-based field visibility
+
                 // Restore form state if there are existing values (after form error)
                 const collegeSelect = document.getElementById('college');
                 const courseSelect = document.getElementById('course');
@@ -701,31 +640,6 @@
             });
 
             lucide.createIcons();
-
-            function toggleStudentFields() {
-                const role = document.getElementById('role').value;
-                const studentFields = document.getElementById('studentFields');
-                const adviserFields = document.getElementById('adviserFields');
-                
-                // Hide all role-specific fields first
-                studentFields.style.display = 'none';
-                adviserFields.style.display = 'none';
-                
-                if (role === 'student') {
-                    studentFields.style.display = 'block';
-                } else if (role === 'adviser') {
-                    adviserFields.style.display = 'block';
-                    // Clear student fields
-                    document.getElementById('student_id').value = '';
-                    document.getElementById('year_level').value = '';
-                    document.getElementById('section').value = '';
-                } else {
-                    // Clear all role-specific fields for chairperson
-                    document.getElementById('student_id').value = '';
-                    document.getElementById('year_level').value = '';
-                    document.getElementById('section').value = '';
-                }
-            }
         </script>
     </body>
     </html>

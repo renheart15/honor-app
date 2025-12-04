@@ -65,7 +65,31 @@ try {
 
     // Get comprehensive student information
     $student_query = "
-        SELECT u.*, gwa.gwa, gwa.total_units, gwa.subjects_count, gwa.calculated_at,
+        SELECT u.*,
+               -- Calculate overall GWA from all grades across all semesters
+               (SELECT
+                   CASE WHEN SUM(g.units) > 0 THEN
+                       SUM(g.units * g.grade) / SUM(g.units)
+                   ELSE NULL END
+                FROM grades g
+                JOIN grade_submissions gs ON g.submission_id = gs.id
+                WHERE gs.user_id = u.id
+                AND g.grade > 0.00
+                AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
+               ) as gwa,
+               -- Get total units and subjects count from all grades
+               (SELECT SUM(g.units) FROM grades g
+                JOIN grade_submissions gs ON g.submission_id = gs.id
+                WHERE gs.user_id = u.id AND g.grade > 0.00
+                AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
+               ) as total_units,
+               (SELECT COUNT(*) FROM grades g
+                JOIN grade_submissions gs ON g.submission_id = gs.id
+                WHERE gs.user_id = u.id AND g.grade > 0.00
+                AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
+               ) as subjects_count,
+               -- Get most recent calculation date
+               (SELECT calculated_at FROM gwa_calculations WHERE user_id = u.id ORDER BY calculated_at DESC LIMIT 1) as calculated_at,
                (SELECT COUNT(*) FROM grade_submissions gs WHERE gs.user_id = u.id) as total_submissions,
                (SELECT COUNT(*) FROM grade_submissions gs WHERE gs.user_id = u.id AND gs.status = 'processed') as processed_submissions,
                (SELECT COUNT(*) FROM grade_submissions gs WHERE gs.user_id = u.id AND gs.status = 'pending') as pending_submissions,
@@ -73,7 +97,6 @@ try {
                (SELECT COUNT(*) FROM honor_applications ha WHERE ha.user_id = u.id AND ha.status = 'final_approved') as approved_applications,
                (SELECT COUNT(*) FROM honor_applications ha WHERE ha.user_id = u.id AND ha.status = 'pending') as pending_applications
         FROM users u
-        LEFT JOIN gwa_calculations gwa ON u.id = gwa.user_id
         WHERE u.id = ?
         AND u.role = 'student'
         AND u.department = ?
@@ -150,14 +173,38 @@ try {
     // Honor eligibility calculation
     $honor_status = 'Not Eligible';
     $honor_color = 'gray';
+    $honor_criteria = '';
+
     if ($student['gwa']) {
         $gwa = floatval($student['gwa']);
-        if ($gwa <= 1.45) {
-            $honor_status = "Dean's List Eligible";
+
+        // Check for approved Latin honors first
+        $latin_honors_query = "
+            SELECT COUNT(*) as has_latin_honors
+            FROM honor_applications ha
+            WHERE ha.user_id = :user_id
+            AND ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')
+            AND ha.status = 'final_approved'
+        ";
+        $latin_stmt = $db->prepare($latin_honors_query);
+        $latin_stmt->bindParam(':user_id', $student_id);
+        $latin_stmt->execute();
+        $latin_result = $latin_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($latin_result['has_latin_honors'] > 0) {
+            $honor_status = 'Latin Honors';
+            $honor_color = 'yellow';
+            $honor_criteria = 'Approved Latin Honors application';
+        } elseif ($gwa <= 1.45) {
+            $honor_status = "Dean's List";
             $honor_color = 'green';
+            $honor_criteria = 'GWA ≤ 1.45';
         } elseif ($gwa <= 1.75) {
             $honor_status = 'Honor Eligible';
             $honor_color = 'blue';
+            $honor_criteria = 'GWA ≤ 1.75';
+        } else {
+            $honor_criteria = 'GWA > 1.75';
         }
     }
 
@@ -218,7 +265,7 @@ try {
                         <div class="text-2xl font-bold <?php echo $student['gwa'] ? 'text-primary-600' : 'text-gray-400'; ?>">
                             <?php echo $student['gwa'] ? formatGWA($student['gwa']) : 'N/A'; ?>
                         </div>
-                        <div class="text-sm text-gray-500">Current GWA</div>
+                        <div class="text-sm text-gray-500">Overall GWA</div>
                         <?php if ($student['calculated_at']): ?>
                             <div class="text-xs text-gray-400">Updated <?php echo date('M j', strtotime($student['calculated_at'])); ?></div>
                         <?php endif; ?>
@@ -232,10 +279,14 @@ try {
                         <div class="text-sm text-gray-500">Subjects</div>
                     </div>
                     <div class="text-center">
-                        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-<?php echo $honor_color; ?>-100 text-<?php echo $honor_color; ?>-800">
+                        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-<?php echo $honor_color; ?>-100 text-<?php echo $honor_color; ?>-800"
+                              title="<?php echo htmlspecialchars($honor_criteria); ?>">
                             <?php echo $honor_status; ?>
                         </span>
                         <div class="text-sm text-gray-500 mt-1">Honor Status</div>
+                        <?php if ($honor_criteria): ?>
+                            <div class="text-xs text-gray-400 mt-1"><?php echo htmlspecialchars($honor_criteria); ?></div>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>

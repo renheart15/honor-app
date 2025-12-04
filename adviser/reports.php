@@ -17,7 +17,15 @@ $department = $_SESSION['department'];
 $year_filter = $_GET['year'] ?? '1'; // Default to first year
 $section_filter = $_GET['section'] ?? 'all';
 $ranking_type_filter = $_GET['ranking_type'] ?? 'deans_list'; // Default to Dean's List
-$period_filter = $_GET['period'] ?? 'all';
+
+// Get latest academic period for default (based on academic year)
+$latest_period_query = "SELECT id FROM academic_periods ORDER BY school_year DESC LIMIT 1";
+$latest_period_stmt = $db->prepare($latest_period_query);
+$latest_period_stmt->execute();
+$latest_period = $latest_period_stmt->fetch(PDO::FETCH_ASSOC);
+$default_period = $latest_period ? $latest_period['id'] : 'all';
+
+$period_filter = $_GET['period'] ?? $default_period;
 
 // Get the academic period to use for GWA calculations
 $academic_period_id = null;
@@ -63,30 +71,18 @@ $student_filter = implode(' AND ', $filter_conditions);
 // Get comprehensive department statistics
 $stats = [];
 
-// Total students (filtered by honor eligibility based on ranking type and academic period)
-// Calculate GWA directly from grades table like rankings.php does
-if ($semester_string) {
-    $query = "SELECT COUNT(DISTINCT u.id) as count
-              FROM users u
-              JOIN grade_submissions gs ON gs.user_id = u.id
-              JOIN grades g ON g.submission_id = gs.id
-              WHERE " . $student_filter . "
-                AND u.role = 'student'
-                AND g.semester_taken = :semester_string
-                AND g.grade > 0.00
-                AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
-              GROUP BY u.id
-              HAVING (SUM(g.units * g.grade) / SUM(g.units)) <= 1.75";
-    $stmt = $db->prepare($query);
-    $stmt->bindValue(':semester_string', $semester_string);
-    foreach ($filter_params as $key => $value) {
-        $stmt->bindValue($key, $value);
-    }
-    $stmt->execute();
-    $stats['total_students'] = $stmt->rowCount();
-} else {
-    $stats['total_students'] = 0;
+// Total students in department (filtered by year level and section only)
+$query = "SELECT COUNT(*) as count
+          FROM users u
+          WHERE " . $student_filter . "
+            AND u.role = 'student'
+            AND u.status = 'active'";
+$stmt = $db->prepare($query);
+foreach ($filter_params as $key => $value) {
+    $stmt->bindValue($key, $value);
 }
+$stmt->execute();
+$stats['total_students'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Total advisers
 $query = "SELECT COUNT(*) as count FROM users WHERE role = 'adviser' AND department = :department AND status = 'active'";
@@ -96,14 +92,28 @@ $stmt->execute();
 $stats['total_advisers'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
 // Honor applications statistics
-$app_conditions = $filter_conditions;
-// Always filter by ranking type (no 'all' option)
-if ($ranking_type_filter == 'deans_list') {
-    $app_conditions[] = "ha.application_type IN ('deans_list')";
-} elseif ($ranking_type_filter == 'latin_honors') {
-    $app_conditions[] = "ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')";
+// Filter applications based on user attributes (year_level, section, department)
+$app_user_conditions = ["u.department = :department", "u.status = 'active'"];
+$app_user_params = [':department' => $department];
+
+// Always filter by year level (no 'all' option)
+$app_user_conditions[] = "u.year_level = :year_level";
+$app_user_params[':year_level'] = $year_filter;
+
+if ($section_filter !== 'all') {
+    $app_user_conditions[] = "u.section = :section";
+    $app_user_params[':section'] = $section_filter;
 }
-$app_filter = implode(' AND ', $app_conditions);
+
+$app_user_filter = implode(' AND ', $app_user_conditions);
+
+// Always filter by ranking type (no 'all' option)
+$app_type_condition = "";
+if ($ranking_type_filter == 'deans_list') {
+    $app_type_condition = "AND ha.application_type IN ('deans_list')";
+} elseif ($ranking_type_filter == 'latin_honors') {
+    $app_type_condition = "AND ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')";
+}
 
 $query = "SELECT
             COUNT(*) as total_applications,
@@ -112,20 +122,14 @@ $query = "SELECT
             SUM(CASE WHEN ha.status IN ('submitted', 'approved') THEN 1 ELSE 0 END) as pending_applications
           FROM honor_applications ha
           JOIN users u ON ha.user_id = u.id
-          WHERE " . $app_filter;
+          WHERE " . $app_user_filter . " " . $app_type_condition;
 $stmt = $db->prepare($query);
-foreach ($filter_params as $key => $value) {
+foreach ($app_user_params as $key => $value) {
     $stmt->bindValue($key, $value);
 }
 $stmt->execute();
 $app_stats = $stmt->fetch(PDO::FETCH_ASSOC);
 $stats = array_merge($stats, $app_stats);
-
-// Calculate Total Disapproved and Total Approved based on Honor Eligible Students
-// Total Disapproved = Total Applications - Honor Eligible Students
-$stats['disapproved_applications'] = max(0, ($stats['total_applications'] ?? 0) - ($stats['total_students'] ?? 0));
-// Total Approved = Total Applications - Total Disapproved
-$stats['approved_applications'] = max(0, ($stats['total_applications'] ?? 0) - ($stats['disapproved_applications'] ?? 0));
 
 // GWA distribution (filtered by ranking type and academic period)
 // Calculate GWA directly from grades table like rankings.php does
@@ -199,42 +203,23 @@ if ($semester_string) {
     $gwa_distribution = [];
 }
 
-// Year level performance (filtered by ranking type and academic period)
-// Calculate GWA directly from grades table like rankings.php does
-if ($semester_string) {
-    $query = "SELECT year_level,
-                     COUNT(DISTINCT user_id) as student_count,
-                     AVG(calculated_gwa) as avg_gwa,
-                     MIN(calculated_gwa) as best_gwa,
-                     COUNT(DISTINCT CASE WHEN calculated_gwa <= 1.75 THEN user_id END) as honor_eligible
-              FROM (
-                SELECT u.id as user_id,
-                       u.year_level,
-                       SUM(g.units * g.grade) / SUM(g.units) as calculated_gwa
-                FROM users u
-                JOIN grade_submissions gs ON gs.user_id = u.id
-                JOIN grades g ON g.submission_id = gs.id
-                WHERE " . $student_filter . "
-                  AND u.role = 'student'
-                  AND g.semester_taken = :semester_string
-                  AND g.grade > 0.00
-                  AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
-                GROUP BY u.id, u.year_level
-              ) as gwa_data
-              GROUP BY year_level
-              ORDER BY year_level";
-    $stmt = $db->prepare($query);
-    $stmt->bindValue(':semester_string', $semester_string);
-    foreach ($filter_params as $key => $value) {
-        $stmt->bindValue($key, $value);
-    }
-    $stmt->execute();
-    $year_performance = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} else {
-    $year_performance = [];
+// Year level performance removed
+$year_performance = [];
+
+// Monthly application trends (last 12 months) - filtered by ranking type, year, and section
+$app_trends_conditions = ["u.department = :department", "u.status = 'active'"];
+$app_trends_params = [':department' => $department];
+
+// Always filter by year level (no 'all' option)
+$app_trends_conditions[] = "u.year_level = :year_level";
+$app_trends_params[':year_level'] = $year_filter;
+
+if ($section_filter !== 'all') {
+    $app_trends_conditions[] = "u.section = :section";
+    $app_trends_params[':section'] = $section_filter;
 }
 
-// Monthly application trends (last 12 months) - filtered by ranking type
+$app_trends_filter = implode(' AND ', $app_trends_conditions);
 if ($ranking_type_filter == 'deans_list') {
     $query = "SELECT
                 DATE_FORMAT(ha.submitted_at, '%Y-%m') as month,
@@ -242,7 +227,7 @@ if ($ranking_type_filter == 'deans_list') {
                 COUNT(CASE WHEN ha.status = 'final_approved' THEN 1 END) as approved_count
               FROM honor_applications ha
               JOIN users u ON ha.user_id = u.id
-              WHERE u.department = :department
+              WHERE " . $app_trends_filter . "
                 AND ha.application_type = 'deans_list'
                 AND ha.submitted_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
               GROUP BY DATE_FORMAT(ha.submitted_at, '%Y-%m')
@@ -254,14 +239,16 @@ if ($ranking_type_filter == 'deans_list') {
                 COUNT(CASE WHEN ha.status = 'final_approved' THEN 1 END) as approved_count
               FROM honor_applications ha
               JOIN users u ON ha.user_id = u.id
-              WHERE u.department = :department
+              WHERE " . $app_trends_filter . "
                 AND ha.application_type IN ('cum_laude', 'magna_cum_laude', 'summa_cum_laude')
                 AND ha.submitted_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
               GROUP BY DATE_FORMAT(ha.submitted_at, '%Y-%m')
               ORDER BY month";
 }
 $stmt = $db->prepare($query);
-$stmt->bindParam(':department', $department);
+foreach ($app_trends_params as $key => $value) {
+    $stmt->bindValue($key, $value);
+}
 $stmt->execute();
 $monthly_trends = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -289,10 +276,16 @@ if ($semester_string) {
                   ORDER BY gwa ASC
                   LIMIT 10";
     } else {
+        // Latin Honors - apply full qualification checks
         $query = "SELECT u.first_name, u.last_name, u.student_id, u.section, u.year_level,
                          SUM(g.units * g.grade) / SUM(g.units) as gwa,
                          COUNT(DISTINCT ha.id) as application_count,
-                         COUNT(DISTINCT CASE WHEN ha.status = 'final_approved' THEN ha.id END) as approved_count
+                         COUNT(DISTINCT CASE WHEN ha.status = 'final_approved' THEN ha.id END) as approved_count,
+                         -- Additional qualification checks
+                         CASE WHEN u.year_level = 4 THEN 1 ELSE 0 END as is_4th_year,
+                         COUNT(DISTINCT CASE WHEN g.semester_taken LIKE '%1st Semester%' OR g.semester_taken LIKE '%2nd Semester%' THEN 1 END) as total_semesters,
+                         MAX(CASE WHEN g.grade > 2.5 THEN 1 ELSE 0 END) as has_grade_above_25,
+                         MAX(CASE WHEN g.grade = 0.00 THEN 1 ELSE 0 END) as has_ongoing_grades
                   FROM users u
                   JOIN grade_submissions gs ON gs.user_id = u.id
                   JOIN grades g ON g.submission_id = gs.id
@@ -306,6 +299,10 @@ if ($semester_string) {
                     AND NOT (UPPER(g.subject_name) LIKE '%NSTP%' OR UPPER(g.subject_name) LIKE '%NATIONAL SERVICE TRAINING%')
                   GROUP BY u.id, u.first_name, u.last_name, u.student_id, u.section, u.year_level
                   HAVING gwa IS NOT NULL AND gwa <= 1.75
+                    AND is_4th_year = 1
+                    AND total_semesters >= 8
+                    AND has_grade_above_25 = 0
+                    AND has_ongoing_grades = 0
                   ORDER BY gwa ASC
                   LIMIT 10";
     }
@@ -329,21 +326,8 @@ if ($semester_string) {
     $top_students = [];
 }
 
-// Adviser performance
-$query = "SELECT u.first_name, u.last_name,
-                 COUNT(DISTINCT gs.id) as processed_submissions,
-                 COUNT(DISTINCT ha.id) as reviewed_applications,
-                 AVG(DATEDIFF(gs.processed_at, gs.upload_date)) as avg_processing_days
-          FROM users u
-          LEFT JOIN grade_submissions gs ON u.id = gs.processed_by
-          LEFT JOIN honor_applications ha ON u.id = ha.reviewed_by
-          WHERE u.role = 'adviser' AND u.department = :department AND u.status = 'active'
-          GROUP BY u.id, u.first_name, u.last_name
-          ORDER BY processed_submissions DESC, reviewed_applications DESC";
-$stmt = $db->prepare($query);
-$stmt->bindParam(':department', $department);
-$stmt->execute();
-$adviser_performance = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// Adviser performance removed
+$adviser_performance = [];
 
 // Get available year levels and sections for filters
 $year_query = "SELECT DISTINCT year_level FROM users WHERE department = :department AND role = 'student' ORDER BY year_level";
@@ -443,6 +427,10 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                         <i data-lucide="bar-chart-3" class="text-green-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
+                    <a href="settings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Settings
+                    </a>
                 </nav>
 
                 <!-- Logout -->
@@ -492,9 +480,7 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                                 </button>
                             </div>
                         </div>
-                    </div>
 
-                    <div class="flex items-center space-x-4">
                         <?php include 'includes/header.php'; ?>
                     </div>
                 </div>

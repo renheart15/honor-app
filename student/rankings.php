@@ -14,15 +14,43 @@ $db = $database->getConnection();
 $student_id = $_SESSION['user_id'];
 $department = $_SESSION['department'];
 
-// Get current student info
-$student_query = "SELECT year_level, section FROM users WHERE id = :student_id";
-$student_stmt = $db->prepare($student_query);
-$student_stmt->bindParam(':student_id', $student_id);
-$student_stmt->execute();
-$current_student = $student_stmt->fetch(PDO::FETCH_ASSOC);
+// Get all academic periods (needed early for ranking_period logic)
+$periods_query = "SELECT DISTINCT ap.id, ap.period_name, ap.school_year, ap.semester
+                  FROM academic_periods ap
+                  ORDER BY ap.school_year DESC, ap.semester DESC";
+$periods_stmt = $db->prepare($periods_query);
+$periods_stmt->execute();
+$available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
 
-$student_year_level = $current_student['year_level'] ?? null;
-$student_section = $current_student['section'] ?? null;
+// Get filter period from request and determine ranking_period
+$filter_period = $_GET['period'] ?? 'all';
+$ranking_period = null;
+if ($filter_period !== 'all') {
+    // Find the selected period details
+    foreach ($available_periods as $period) {
+        if ($period['id'] == $filter_period) {
+            $ranking_period = $period;
+            break;
+        }
+    }
+}
+
+// Get latest academic period for default (based on academic year)
+$latest_period_query = "SELECT id FROM academic_periods ORDER BY school_year DESC LIMIT 1";
+$latest_period_stmt = $db->prepare($latest_period_query);
+$latest_period_stmt->execute();
+$latest_period = $latest_period_stmt->fetch(PDO::FETCH_ASSOC);
+$default_period = $latest_period ? $latest_period['id'] : 'all';
+
+// If no period selected, use the default/latest period
+if (!$ranking_period && $default_period !== 'all') {
+    foreach ($available_periods as $period) {
+        if ($period['id'] == $default_period) {
+            $ranking_period = $period;
+            break;
+        }
+    }
+}
 
 // Get current academic period
 $query = "SELECT * FROM academic_periods WHERE is_active = 1 LIMIT 1";
@@ -30,13 +58,38 @@ $stmt = $db->prepare($query);
 $stmt->execute();
 $active_period = $stmt->fetch(PDO::FETCH_ASSOC);
 
+// If still no ranking_period and we have an active period, use it as fallback
+if (!$ranking_period && $active_period) {
+    $ranking_period = $active_period;
+}
+
 // Get application period information for this department
 $application_period = isApplicationPeriodOpen($db, $department);
 if (!$application_period) {
     $next_application_period = getNextApplicationPeriod($db, $department);
 }
 
-// Get students in the department (department-wide for rankings view)
+// Auto-generate rankings if none exist for current period
+if ($active_period) {
+    // Check if rankings already exist for this period and department
+    $check_stmt = $db->prepare("SELECT COUNT(*) as count FROM honor_rankings WHERE academic_period_id = :period_id AND department = :department");
+    $check_stmt->bindParam(':period_id', $active_period['id']);
+    $check_stmt->bindParam(':department', $department);
+    $check_stmt->execute();
+    $existing_rankings = $check_stmt->fetch(PDO::FETCH_ASSOC)['count'];
+
+    // If no rankings exist or very few exist (indicating incomplete generation), generate them
+    // Check total students to see if rankings are proportionally low
+    $check_total_students = $db->prepare("SELECT COUNT(*) as count FROM users WHERE department = :department AND role = 'student' AND status = 'active'");
+    $check_total_students->bindParam(':department', $department);
+    $check_total_students->execute();
+    $total_student_count = $check_total_students->fetch(PDO::FETCH_ASSOC)['count'];
+
+    // Force regeneration if rankings are less than 10% of total students
+    $force_regenerate = ($existing_rankings < ($total_student_count * 0.1) && $total_student_count > 0);
+}
+
+// Get students in the department with comprehensive data (same as students.php)
 $query = "SELECT u.*,
                  (SELECT COUNT(*) FROM grade_submissions gs WHERE gs.user_id = u.id) as submission_count
           FROM users u
@@ -49,8 +102,8 @@ $students = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Calculate period-specific GWA for each student and check for approved applications
 foreach ($students as &$student) {
-    if ($active_period) {
-        $semester_string = $active_period['semester'] . ' Semester SY ' . $active_period['school_year'];
+    if ($ranking_period) {
+        $semester_string = $ranking_period['semester'] . ' Semester SY ' . $ranking_period['school_year'];
 
         // Calculate period-specific GWA
         $gwa_query = "
@@ -73,12 +126,12 @@ foreach ($students as &$student) {
 
         if ($gwa_data && $gwa_data['total_units'] > 0) {
             $period_gwa = $gwa_data['total_grade_points'] / $gwa_data['total_units'];
-            $student['gwa'] = floor($period_gwa * 100) / 100;
+            $student['gwa'] = floor($period_gwa * 100) / 100; // Truncate to 2 decimal places
         } else {
-            $student['gwa'] = null;
+            $student['gwa'] = null; // No grades found for this period
         }
 
-        // Check for approved Latin honors application
+        // Check for approved Latin honors application (cum laude, magna cum laude, summa cum laude)
         $latin_honors_query = "
             SELECT COUNT(*) as has_approved_latin_honors
             FROM honor_applications ha
@@ -90,19 +143,19 @@ foreach ($students as &$student) {
 
         $latin_honors_stmt = $db->prepare($latin_honors_query);
         $latin_honors_stmt->bindParam(':user_id', $student['id']);
-        $latin_honors_stmt->bindParam(':period_id', $active_period['id']);
+        $latin_honors_stmt->bindParam(':period_id', $ranking_period['id']);
         $latin_honors_stmt->execute();
         $latin_honors_data = $latin_honors_stmt->fetch(PDO::FETCH_ASSOC);
 
         $student['has_approved_latin_honors'] = $latin_honors_data['has_approved_latin_honors'] > 0;
     } else {
-        $student['gwa'] = null;
+        $student['gwa'] = null; // No period selected
         $student['has_approved_latin_honors'] = false;
     }
 }
-unset($student);
+unset($student); // Break the reference
 
-// Sort students by GWA (ascending, nulls last)
+// Sort students by GWA (ascending, nulls last) - same as students.php
 usort($students, function($a, $b) {
     if ($a['gwa'] === null && $b['gwa'] === null) return 0;
     if ($a['gwa'] === null) return 1;
@@ -110,12 +163,21 @@ usort($students, function($a, $b) {
     return $a['gwa'] <=> $b['gwa'];
 });
 
+// Get latest academic period for default (based on academic year)
+$latest_period_query = "SELECT id FROM academic_periods ORDER BY school_year DESC LIMIT 1";
+$latest_period_stmt = $db->prepare($latest_period_query);
+$latest_period_stmt->execute();
+$latest_period = $latest_period_stmt->fetch(PDO::FETCH_ASSOC);
+$default_period = $latest_period ? $latest_period['id'] : 'all';
+
 // Filter students
+$filter = $_GET['filter'] ?? 'all';
 $search = $_GET['search'] ?? '';
-$year_filter = $_GET['year'] ?? 'all';
+$year_filter = $_GET['year'] ?? '1'; // Default to first year
 $section_filter = $_GET['section'] ?? 'all';
-$ranking_type_filter = $_GET['ranking_type'] ?? 'all';
-$filter_period = $_GET['period'] ?? 'all';
+$ranking_type_filter = $_GET['ranking_type'] ?? 'deans_list'; // Default to Dean's List
+
+// Apply filters (honor status filter removed, using honor type filter only)
 
 if ($year_filter !== 'all') {
     $students = array_filter($students, function($student) use ($year_filter) {
@@ -169,7 +231,7 @@ foreach ($students as $student) {
 }
 
 // Add debug message after we have the data
-$debug_message = "Found " . count($students) . " total students, " . count($rankings) . " with GWA rankings.";
+$debug_message = "Found " . count($students) . " total students, " . count($rankings) . " with GWA rankings. Using direct approach like students.php.";
 
 // Get available year levels and sections for filters
 $year_query = "SELECT DISTINCT year_level FROM users WHERE department = :department AND role = 'student' ORDER BY year_level";
@@ -268,9 +330,9 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                         <i data-lucide="file-bar-chart" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
-                    <a href="profile.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                    <a href="settings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
                         <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
-                        Profile
+                        Settings
                     </a>
                 </nav>
 
@@ -349,7 +411,6 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                                         <label class="block text-sm font-medium text-gray-700 mb-2">Year Level</label>
                                         <select id="year_filter" onchange="applyFilters()"
                                                 class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
-                                            <option value="all" <?php echo $year_filter === 'all' ? 'selected' : ''; ?>>All Years</option>
                                             <?php foreach ($available_years as $year): ?>
                                                 <option value="<?php echo $year['year_level']; ?>" <?php echo $year_filter == $year['year_level'] ? 'selected' : ''; ?>>
                                                     Year <?php echo $year['year_level']; ?>
@@ -377,7 +438,6 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                                         <label class="block text-sm font-medium text-gray-700 mb-2">Honor Type</label>
                                         <select id="ranking_type_filter" onchange="applyFilters()"
                                                 class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
-                                            <option value="all" <?php echo $ranking_type_filter === 'all' ? 'selected' : ''; ?>>All Types</option>
                                             <option value="deans_list" <?php echo $ranking_type_filter === 'deans_list' ? 'selected' : ''; ?>>Dean's List</option>
                                             <option value="latin_honors" <?php echo $ranking_type_filter === 'latin_honors' ? 'selected' : ''; ?>>Latin Honors</option>
                                         </select>
@@ -388,7 +448,6 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
                                         <label class="block text-sm font-medium text-gray-700 mb-2">Academic Period</label>
                                         <select id="period_filter" onchange="applyFilters()"
                                                 class="w-full px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
-                                            <option value="all" <?php echo $filter_period === 'all' ? 'selected' : ''; ?>>Current Period</option>
                                             <?php foreach ($available_periods as $period): ?>
                                                 <option value="<?php echo $period['id']; ?>" <?php echo $filter_period == $period['id'] ? 'selected' : ''; ?>>
                                                     <?php echo $period['semester']; ?> Sem SY <?php echo $period['school_year']; ?>
@@ -579,7 +638,8 @@ $available_periods = $periods_stmt->fetchAll(PDO::FETCH_ASSOC);
             url.searchParams.delete('year');
             url.searchParams.delete('section');
             url.searchParams.delete('ranking_type');
-            url.searchParams.delete('period');
+            // Keep period filter with default value (latest period)
+            url.searchParams.set('period', '<?php echo $default_period; ?>');
             url.searchParams.delete('search');
             window.location.href = url.toString();
         }

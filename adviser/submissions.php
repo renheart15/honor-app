@@ -402,6 +402,10 @@ function getStatusBadgeClass($status) {
                         <i data-lucide="bar-chart-3" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
                         Reports
                     </a>
+                    <a href="settings.php" class="text-gray-600 hover:bg-gray-50 hover:text-gray-900 group flex items-center px-2 py-2 text-sm font-medium rounded-xl">
+                        <i data-lucide="settings" class="text-gray-400 group-hover:text-gray-500 mr-3 h-5 w-5"></i>
+                        Settings
+                    </a>
                 </nav>
 
                 <!-- Logout -->
@@ -449,16 +453,14 @@ function getStatusBadgeClass($status) {
                     </div>
                     
                     <div class="flex items-center space-x-4">
-                        <select onchange="filterSubmissions(this.value)" 
+                        <select onchange="filterSubmissions(this.value)"
                                 class="px-3 py-2 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-primary-500 transition-colors">
                             <option value="all" <?php echo $filter === 'all' ? 'selected' : ''; ?>>All Submissions</option>
                             <option value="pending" <?php echo $filter === 'pending' ? 'selected' : ''; ?>>Pending</option>
                             <option value="processed" <?php echo $filter === 'processed' ? 'selected' : ''; ?>>Processed</option>
                             <option value="rejected" <?php echo $filter === 'rejected' ? 'selected' : ''; ?>>Rejected</option>
                         </select>
-                    </div>
 
-                    <div class="flex items-center space-x-4">
                         <?php include 'includes/header.php'; ?>
                     </div>
                 </div>

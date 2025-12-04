@@ -6,7 +6,7 @@ if (!isset($notificationManager)) {
 
 // Get notifications for current user
 $user_id = $_SESSION['user_id'];
-$notifications = $notificationManager->getUserNotifications($user_id, 5);
+$notifications = $notificationManager->getUserNotifications($user_id, 20);
 $unread_count = $notificationManager->getUnreadCount($user_id);
 ?>
 

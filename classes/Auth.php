@@ -56,6 +56,14 @@ class Auth {
             $this->user->section = $data['section'];
 
             if ($this->user->create()) {
+                // Send notification to chairperson if adviser registered
+                if ($data['role'] === 'adviser') {
+                    require_once 'NotificationManager.php';
+                    $notificationManager = new NotificationManager($this->conn);
+                    $adviser_name = $data['first_name'] . ' ' . $data['last_name'];
+                    $notificationManager->notifyChairpersonNewAdviser($adviser_name, $data['department']);
+                }
+
                 return ['success' => true, 'message' => 'Registration successful'];
             }
 
